@@ -26,6 +26,20 @@ outright. Everything the report computed about those values — the findings tab
 counts, the redacted previews — is untouched, and running the builder locally gives you the
 unmasked report.
 
+## The sample AI explanation
+
+The builder never asks a real model: an answer needs a key and differs on every run, which is
+exactly what a capture cannot have. [`sample-explanation.json`](sample-explanation.json) is one
+reply instead — Claude Opus 5.5's answer to exactly the request
+`lw explain order-processor --dry-run` prints for v1 → v2, kept as the JSON it replied with.
+
+`--publish` ingests the two builds into an archive of their own, saves that reply through the same
+parser and record a live `lw explain` uses, and publishes the result to
+[`report-explained/`](report-explained/). Only the model's text is fixed; the page is drawn by the
+real code, and none of the captures can see it. `tests/test_docs.py` checks the reply still cites
+only files the demo change has, and keeps to the kinds, levels and lengths the prompt asks for, so
+a change to the demo that would leave the sample describing something else fails the suite.
+
 `tests/test_docs.py` runs this script and fails if any terminal block on the site or in the
 top-level README is not a line the tool actually printed. That is what stops the
 documentation drifting back into plausible-looking fiction — the usual failure mode for

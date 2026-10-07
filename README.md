@@ -250,6 +250,19 @@ answer: every file it mentions links to that file's diff, each changed file gets
 the deploy checklist remembers what you ticked, and the history page lists what each release
 *did*. Older versions get one with `lw explain`; `--all` fills in a function's whole history.
 
+Here is what a model made of the demo change above:
+
+<p align="center">
+<a href="https://utkarsh5026.github.io/lambwatch/examples/report-explained/v0001-v0002.html"><img src="https://raw.githubusercontent.com/utkarsh5026/lambwatch/main/docs/images/report-ai-explanation.png" alt="An AI explanation of the demo change in the report: the headline and summary beside a high-risk verdict, the changes by kind, a deploy checklist, and what could go wrong" width="760"></a>
+</p>
+
+**[Open the explained report →](https://utkarsh5026.github.io/lambwatch/examples/report-explained/v0001-v0002.html)**
+— every file it names opens that file's diff, each risk opens to say how to check for it, and the
+checklist remembers what you tick. The model's whole reply is
+[`sample-explanation.json`](https://github.com/utkarsh5026/lambwatch/blob/main/docs/examples/sample-explanation.json):
+the answer to exactly what `lw explain order-processor --dry-run` prints, drawn by the same code
+that draws a live one.
+
 **What leaves your machine, and when, is yours to decide:**
 
 ```bash

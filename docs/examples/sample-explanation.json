@@ -1,0 +1,92 @@
+{
+  "headline": "Saved orders are now also sent to SQS, and config.py ships hardcoded AWS and Stripe keys",
+  "summary": "lambda_handler now publishes every accepted order to the queue named by the new QUEUE_URL environment variable, right after put_order writes it to DynamoDB, and rejects orders with more than MAX_ITEMS (50) items with a 422. New orders are stored with \"status\": \"PENDING\". The config.py that supplies MAX_ITEMS also hardcodes an AWS access key ID and a Stripe API key and sets DEBUG = True, so this package should not be deployed as it stands.",
+  "risk": "high",
+  "risk_reason": "The package commits two credentials, and every invocation fails at import if QUEUE_URL is not set.",
+  "changes": [
+    {
+      "kind": "feature",
+      "title": "Accepted orders are published to SQS",
+      "detail": "After put_order saves the order, lambda_handler sends the whole order as JSON to QUEUE_URL with sqs.send_message, so a downstream consumer can pick it up for fulfilment.",
+      "files": ["lambda_function.py"]
+    },
+    {
+      "kind": "behaviour",
+      "title": "Orders with more than MAX_ITEMS items are rejected with 422",
+      "detail": "An order with over 50 items now gets 422 {\"error\": \"too many items\"} before anything is written. Callers that used to get 201 for large orders will now get an error.",
+      "files": ["lambda_function.py", "config.py"]
+    },
+    {
+      "kind": "behaviour",
+      "title": "New orders are stored with status PENDING",
+      "detail": "put_order adds \"status\": \"PENDING\" to every item it writes, so new records carry a field that older records in the table do not.",
+      "files": ["helpers/db.py"]
+    },
+    {
+      "kind": "security",
+      "title": "config.py hardcodes an AWS access key and a Stripe key",
+      "detail": "AWS_ACCESS_KEY_ID and STRIPE_API_KEY are string literals in the deployment package, next to DEBUG = True. The file's own TODO says they belong in Secrets Manager.",
+      "files": ["config.py"]
+    },
+    {
+      "kind": "refactor",
+      "title": "db.py moved into a helpers package",
+      "detail": "db.py is now helpers/db.py, with an empty helpers/__init__.py, and the import in lambda_function.py follows it. No behaviour change beyond the new status field.",
+      "files": ["helpers/db.py", "helpers/__init__.py", "lambda_function.py"]
+    },
+    {
+      "kind": "dependency",
+      "title": "boto3 and botocore upgraded to 1.35.20; pydantic 2.9.0 added",
+      "detail": "requirements.txt and the installed packages agree. None of the changed files shown import pydantic, so it adds size without a visible use yet.",
+      "files": ["requirements.txt"]
+    }
+  ],
+  "risks": [
+    {
+      "level": "high",
+      "title": "Credentials committed to the deployment package",
+      "detail": "Anyone who can download this function's code can read the AWS access key ID and the Stripe key in config.py. Treat both as exposed: rotate them, and load them from Secrets Manager or encrypted environment variables instead.",
+      "files": ["config.py"]
+    },
+    {
+      "level": "high",
+      "title": "Every invocation fails if QUEUE_URL is not set",
+      "detail": "QUEUE_URL is read with os.environ[\"QUEUE_URL\"] at import time, so a missing variable raises KeyError during the cold start and the function fails before lambda_handler runs. Set it before deploying.",
+      "files": ["lambda_function.py"]
+    },
+    {
+      "level": "medium",
+      "title": "Execution role needs sqs:SendMessage",
+      "detail": "boto3.client(\"sqs\") is new. Without sqs:SendMessage on the queue, send_message raises after put_order has already saved the order, so the caller sees an error for an order that was stored and nothing reaches the queue.",
+      "files": ["lambda_function.py"]
+    },
+    {
+      "level": "medium",
+      "title": "Orders over 50 items now fail with 422",
+      "detail": "Clients that send larger orders will start getting errors where they used to succeed. Check whether any real orders exceed MAX_ITEMS before deploying.",
+      "files": ["lambda_function.py", "config.py"]
+    },
+    {
+      "level": "low",
+      "title": "DEBUG = True ships in config.py",
+      "detail": "Nothing in the changed code reads DEBUG yet, but it is switched on in what would be a production package.",
+      "files": ["config.py"]
+    }
+  ],
+  "checklist": [
+    "Rotate the AWS access key and the Stripe key that config.py commits",
+    "Move AWS_ACCESS_KEY_ID and STRIPE_API_KEY out of config.py into Secrets Manager or encrypted environment variables",
+    "Add QUEUE_URL to the function's environment variables",
+    "Grant the execution role sqs:SendMessage on that queue",
+    "Confirm something consumes the queue before orders start arriving on it",
+    "Check whether any client sends orders with more than 50 items",
+    "Set DEBUG = False in config.py"
+  ],
+  "files": {
+    "lambda_function.py": "Publishes each saved order to SQS and rejects orders over MAX_ITEMS with a 422.",
+    "config.py": "New: hardcoded AWS and Stripe credentials, DEBUG = True, and MAX_ITEMS = 50.",
+    "helpers/db.py": "Moved from db.py; new orders are stored with status PENDING.",
+    "helpers/__init__.py": "Empty file that makes helpers an importable package.",
+    "requirements.txt": "boto3 pinned to 1.35.20 and pydantic 2.9.0 added."
+  }
+}
