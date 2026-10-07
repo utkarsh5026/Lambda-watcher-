@@ -277,6 +277,10 @@ def test_report_builds_a_browsable_history(archived: Path):
     index = archived / "reports" / "order-processor" / "index.html"
     assert index.exists()
     assert (archived / "reports" / "order-processor" / "v0001-v0002.html").exists()
+    page = index.read_text(encoding="utf-8")
+    # The step's numbers reach the page, not only its one-line summary.
+    assert '<a class="tl-change" href="v0001-v0002.html">' in page
+    assert 'class="tl-nums"' in page
 
 
 @pytest.fixture

@@ -39,6 +39,8 @@ GLYPHS: dict[str, str] = {
                 '<circle cx="6" cy="6.9" r="1.1"/><path d="m3 11.8 3.2-3 2.4 2.3 2.2-1.8 2.8 2.5"/>',
     "binary":   '<path d="M8 2.4 13.6 5.4v5.2L8 13.6 2.4 10.6V5.4z"/>'
                 '<path d="M2.4 5.4 8 8.4l5.6-3"/><path d="M8 8.4v5.2"/>',
+    "folder":   '<path d="M2.2 4.6c0-.8.6-1.4 1.4-1.4h2.5l1.6 1.7h4.7c.8 0 1.4.6 1.4 1.4v5.3'
+                'c0 .8-.6 1.4-1.4 1.4H3.6c-.8 0-1.4-.6-1.4-1.4z"/>',
 }
 
 # Key -> (glyph, colour). The keys are the language labels `utils.language_for`
@@ -113,6 +115,15 @@ def file_icon(path: str, lang: str) -> str:
     )
 
 
+def folder_icon() -> str:
+    """The mark on a folder's row in the file tree, drawn from the same sprite as the files.
+
+    One colour for every folder, quieter than the file icons: a folder is
+    where things are, not one of the things that changed.
+    """
+    return '<svg class="fic fic-folder" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-folder"/></svg>'
+
+
 def sprite() -> str:
     """The hidden glyph sheet every ``file_icon`` points at, emitted once."""
     symbols = "".join(
@@ -127,6 +138,7 @@ def css() -> str:
         "svg.sprite { display: none; }",
         ".fic { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor;",
         "  stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }",
+        ".fic-folder { color: #8b93a1; }",
     ]
     rules = [f".fic-{key} {{ color: {colour}; }}" for key, (_, colour) in ICONS.items()]
     return "\n".join(base + rules) + "\n"

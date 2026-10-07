@@ -6,18 +6,22 @@ attach to a change ticket, or send to a colleague.
 
 from __future__ import annotations
 
+import base64
 import html
 import os
 import re
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cache
+from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..ai.explanation import PENDING_STALE_SECONDS
-from ..utils import format_ts, human_size, read_text, rename_label, signed, slugify
-from . import icons, intraline
+from ..utils import format_ts, human_size, read_text, relative_ts, signed, slugify
+from . import filetree, icons, intraline
 
 if TYPE_CHECKING:
     from ..ai.explanation import Explanation
@@ -29,6 +33,41 @@ from .highlight import highlight, highlight_lines, language_of
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 ICON_CSS = icons.css()
+
+
+@cache
+def font_css() -> str:
+    """The ``@font-face`` rules that carry the report's code font inside the page.
+
+    Cascadia Mono, cut down to the characters code and the report use — see
+    ``tools/subset_font.py`` — and inlined as data, because the page is one
+    file that has to look the same opened from a share, an email or a laptop
+    with no network. Both weights together add about 33 KB to a page.
+
+    ``unicode-range`` names what the subset holds, so a line of Japanese in a
+    comment goes straight to the next font in ``--mono`` rather than to a
+    missing glyph. A package installed without its font files is a worse
+    page, not a broken one: this returns nothing and the report falls back
+    to the system's monospace.
+    """
+    faces = []
+    for weight, name in ((400, "Regular"), (600, "SemiBold")):
+        try:
+            data = resources.files(__package__).joinpath(f"fonts/CascadiaMono-{name}.woff2").read_bytes()
+        except OSError:
+            return ""
+        faces.append(
+            '@font-face { font-family: "Cascadia Mono"; font-style: normal; '
+            f"font-weight: {weight}; font-display: swap; "
+            f'src: url(data:font/woff2;base64,{base64.b64encode(data).decode("ascii")}) format("woff2"); '
+            f"unicode-range: {FONT_RANGE}; }}"
+        )
+    return "\n".join(faces) + "\n"
+
+
+#: The characters the embedded font holds, as ``tools/subset_font.py`` cut it.
+FONT_RANGE = ("U+0020-007E, U+00A0-017F, U+2010-2027, U+2030-203A, U+2190-2193, U+21D2, "
+              "U+2212, U+2022, U+20AC, U+2122, U+2500-257F, U+25A0-25A1, U+2713-2717")
 
 #: A file's lines as ``(source, highlighted)`` pairs — see `_paint`.
 _Painted = list[tuple[str, str]] | None
@@ -48,8 +87,8 @@ CSS = """
   --radius: 12px;
   --sans: "Inter", "InterVariable", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
           Roboto, Helvetica, Arial, sans-serif;
-  --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, "SF Mono", Menlo, Consolas,
-          "Liberation Mono", monospace;
+  --mono: "Cascadia Mono", "Cascadia Code", ui-monospace, "JetBrains Mono", SFMono-Regular,
+          "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   /* Syntax tokens, One Light. Numbers and constants share a colour on purpose:
      both are literal values, and the eye reads them as the same thing. */
   --tk-c: #8b8f97; --tk-k: #a626a4; --tk-s: #50a14f; --tk-n: #986801;
@@ -57,6 +96,14 @@ CSS = """
   /* What a model wrote wears its own colour, so it is never mistaken for
      something the diff engine measured. */
   --ai: #6b4fd8; --ai-wash: #f5f2ff; --ai-edge: #e3dbfd;
+  /* The diff's own washes, a step quieter than the add and delete colours the
+     labels use. A label is a few pixels and has to be read at a glance; a
+     diff is a screenful, and at label strength the colour drowns out the
+     syntax colours of the code it sits under. */
+  --d-add-bg: #f3faf5; --d-add-word: #d5efde; --d-add-ln: #e8f4ec; --d-add-edge: #9bd2b0;
+  --d-add-num: #4e8a64;
+  --d-del-bg: #fdf5f6; --d-del-word: #f4dade; --d-del-ln: #f7e8eb; --d-del-edge: #e2aab4;
+  --d-del-num: #a8606c;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -70,6 +117,10 @@ CSS = """
     --tk-c: #7f848e; --tk-k: #c678dd; --tk-s: #98c379; --tk-n: #d19a66;
     --tk-t: #d19a66; --tk-f: #61afef; --tk-y: #56b6c2;
     --ai: #b3a1ff; --ai-wash: #1d1834; --ai-edge: #372d63;
+    --d-add-bg: #121f19; --d-add-word: #1f3a2a; --d-add-ln: #15241c; --d-add-edge: #2e6544;
+    --d-add-num: #6aa883;
+    --d-del-bg: #21161a; --d-del-word: #42222a; --d-del-ln: #28191e; --d-del-edge: #723843;
+    --d-del-num: #c4838d;
   }
 }
 * { box-sizing: border-box; }
@@ -91,9 +142,15 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 600;
   color: var(--text); letter-spacing: -0.01em; white-space: nowrap; }
+/* The mark is a Lambda in Lambda's own orange, so a reader who lives in the
+   AWS console knows at a glance what this page is about. It is drawn here
+   rather than borrowed: AWS licenses its service icons for architecture
+   diagrams, not as another tool's logo. */
 .brand .logo { display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; border-radius: 7px; color: #fff; font-size: 14px; font-weight: 700;
-  background: linear-gradient(135deg, #6d74f2, #4148c9); box-shadow: inset 0 -1px 0 rgba(0,0,0,.18); }
+  width: 24px; height: 24px; border-radius: 6px; color: #fff;
+  background: linear-gradient(45deg, #c8511b, #ff9900); box-shadow: inset 0 -1px 0 rgba(0,0,0,.18); }
+.brand .logo svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2.3;
+  stroke-linecap: round; stroke-linejoin: round; }
 .crumbs { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--muted); }
 .crumbs .sep { color: var(--border); font-size: 18px; font-weight: 300; }
 .crumbs a { color: var(--muted); white-space: nowrap; }
@@ -251,20 +308,56 @@ table.grid th.num { text-align: right; }
 /* ---- the file list --------------------------------------------------- */
 /* One panel of rows rather than a stack of cards, because the list is an index:
    the diff it points at opens beside it instead of pushing the rest of the
-   list down the page. A row is a button, since that is what it does. */
-.files { border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
-.file { border-top: 1px solid var(--rule); }
+   list down the page. A row is a button, since that is what it does.
+
+   The rows are a tree of the folders they live in, so the structure is drawn
+   rather than spelled out in every path. Where a row starts is arithmetic on
+   its depth: the margin, one step per level, and room for a folder's arrow,
+   which a file has none of but steps in past so its icon lines up under its
+   folder's name. */
+.files { --tree-x: 20px; --tree-step: 18px; --twist: 21px;
+  border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
+.file, .frow { border-top: 1px solid var(--rule); }
 /* Transparent rather than absent so every row is the same height, whichever
-   one the filter left at the top. */
-.file:first-child, .file.first-shown { border-top-color: transparent; }
+   one the filter left at the top. Only a top-level row can be first: a file
+   inside a folder always has its folder's row above it. */
+.files > .file:first-child, .files > .file.first-shown,
+.files > .folder:first-child > .frow, .files > .folder.first-shown > .frow {
+  border-top-color: transparent; }
 .row { display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 20px;
   font: inherit; color: var(--text); text-align: left; background: none; border: 0;
   cursor: pointer; transition: background .12s ease; }
+.files .row { padding-left: calc(var(--tree-x) + var(--depth, 0) * var(--tree-step) + var(--twist)); }
+.files .frow { padding-left: calc(var(--tree-x) + var(--depth, 0) * var(--tree-step)); }
+.files[data-flat] .row { padding-left: var(--tree-x); }
 .row:hover { background: var(--panel); }
 .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-/* One width for every kind, so the paths start in one column and the eye can
-   run straight down them. */
+/* One width for every kind, so the kinds stand in one column down the right
+   whatever depth the name beside them starts at. */
 .row .chip { min-width: 90px; }
+/* A row already sits under its folder, so the folder part of its path is left
+   out here. It is still in the markup: the sheet's heading is copied from the
+   row, and up there the whole path is what says which file is open. */
+.files .row .p > .dir { display: none; }
+/* A folder's row: the arrow that folds it, its name, and in the kind column
+   how many files it holds — a count, so drawn as text rather than a label. */
+.frow .p { font-weight: 600; }
+.frow::after { visibility: hidden; }
+.chip.tally { background: none; color: var(--faint); font-weight: 500; }
+.chip.tally::before { display: none; }
+.twist { position: relative; width: 12px; height: 16px; flex: 0 0 auto; }
+.twist::before { content: ""; position: absolute; left: 3px; top: 4px; width: 5px; height: 5px;
+  border: 1.6px solid var(--faint); border-top: 0; border-left: 0;
+  transform: rotate(45deg); transition: transform .15s ease; }
+.frow:hover .twist::before { border-color: var(--accent); }
+.folder.collapsed > .frow .twist::before { transform: translate(-1px, 2px) rotate(-45deg); }
+.folder.collapsed > .kids { display: none; }
+/* A guide down from each open folder's arrow to its last row, so a long folder
+   still shows which rows are in it once its own row has scrolled away. */
+.kids { position: relative; }
+.kids::before { content: ""; position: absolute; top: 0; bottom: 0; width: 1px; z-index: 1;
+  left: calc(var(--tree-x) + (var(--depth) - 1) * var(--tree-step) + 6px);
+  background: var(--border); pointer-events: none; }
 /* The chevron points where the diff will appear: to the side, not downwards.
    Drawn in CSS because a vendored diff runs to thousands of rows, and each one
    would otherwise carry its own copy of the glyph. */
@@ -275,7 +368,11 @@ table.grid th.num { text-align: right; }
 .file.active .row { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
 .file.active .row::after { border-color: var(--accent); transform: translateX(2px) rotate(45deg); }
 .row .path { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
-.row .path .p { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+/* A zero basis keeps a long name on the line beside its icon, wrapping inside
+   its own box, rather than dropping the whole name under the icon whenever
+   the list is narrow — which it is, beside a docked sheet. */
+.row .path .p { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere;
+  flex: 1 1 0; min-width: 0; }
 /* The directory part of a path is quieter than its name, which is the part a
    reader is scanning for. */
 .path .dir { color: var(--faint); }
@@ -307,20 +404,20 @@ table.grid th.num { text-align: right; }
 .diff td.mark { width: 1%; padding: 0 4px 0 8px; text-align: center; color: var(--faint);
   user-select: none; border-left: 2px solid transparent; }
 .diff td.code { padding-left: 4px; width: 100%; }
-.diff tr.add td.code, .diff tr.add td.mark { background: var(--add-bg); }
-.diff tr.add td.mark { color: var(--add-fg); border-left-color: var(--add-fg); }
-.diff tr.add td.ln { background: var(--add-gutter); color: var(--add-fg); }
-.diff tr.del td.code, .diff tr.del td.mark { background: var(--del-bg); }
-.diff tr.del td.mark { color: var(--del-fg); border-left-color: var(--del-fg); }
-.diff tr.del td.ln { background: var(--del-gutter); color: var(--del-fg); }
+.diff tr.add td.code, .diff tr.add td.mark { background: var(--d-add-bg); }
+.diff tr.add td.mark { color: var(--d-add-num); border-left-color: var(--d-add-edge); }
+.diff tr.add td.ln { background: var(--d-add-ln); color: var(--d-add-num); }
+.diff tr.del td.code, .diff tr.del td.mark { background: var(--d-del-bg); }
+.diff tr.del td.mark { color: var(--d-del-num); border-left-color: var(--d-del-edge); }
+.diff tr.del td.ln { background: var(--d-del-ln); color: var(--d-del-num); }
 .diff tr.hunk td { background: var(--accent-wash); color: var(--accent); font-size: 11.5px;
   padding: 5px 12px; border-top: 1px solid var(--accent-edge); border-bottom: 1px solid var(--accent-edge); }
 .diff tr.hunk:first-child td { border-top: none; }
 /* Which words of the line actually changed. This sits on top of the row wash,
    so it has to be a step stronger than it in both themes. */
 .wd { border-radius: 3px; }
-tr.add .wd { background: var(--add-word); }
-tr.del .wd { background: var(--del-word); }
+tr.add .wd { background: var(--d-add-word); }
+tr.del .wd { background: var(--d-del-word); }
 /* A file with no usable lines: one row per changed run, the unchanged text
    either side dimmed so the eye lands on the part that moved. Shares the add
    and delete colours with the table above so the two read as one legend. */
@@ -332,9 +429,9 @@ tr.del .wd { background: var(--del-word); }
 .wordedit td.at { width: 1%; text-align: right; color: var(--faint);
   background: var(--panel); border-right: 1px solid var(--rule); }
 .wordedit td.run { width: 100%; color: var(--faint); }
-.wordedit .was { background: var(--del-word); color: var(--del-fg); border-radius: 3px; }
+.wordedit .was { background: var(--d-del-word); color: var(--d-del-num); border-radius: 3px; }
 .wordedit .was.gone { text-decoration: line-through; }
-.wordedit .now { background: var(--add-word); color: var(--add-fg); border-radius: 3px; }
+.wordedit .now { background: var(--d-add-word); color: var(--d-add-num); border-radius: 3px; }
 .tk-c { color: var(--tk-c); font-style: italic; }
 .tk-k { color: var(--tk-k); }
 .tk-s { color: var(--tk-s); }
@@ -446,10 +543,14 @@ body.dragging, body.dragging .sheet { transition: none; }
   .crumbs a, .crumbs span { overflow: hidden; text-overflow: ellipsis; }
   header.top { padding-top: 24px; }
   h1 { font-size: 23px; }
-  .stat { flex-basis: 50%; border-top: 1px solid var(--rule); }
+  .stat { flex-basis: 50%; border-top: 1px solid var(--rule); padding: 14px 16px; }
+  .stat .v { font-size: 20px; flex-wrap: wrap; row-gap: 0; }
+  .files { --tree-x: 16px; --tree-step: 12px; }
   .row { flex-wrap: wrap; padding: 10px 16px; row-gap: 6px; }
-  .row .path { flex-basis: calc(100% - 110px); }
-  .row .stat-line { margin-left: 102px; flex-wrap: wrap; white-space: normal; }
+  .row .path { flex-basis: 100%; }
+  .row .stat-line { margin-left: 25px; flex-wrap: wrap; white-space: normal; }
+  .frow .stat-line { margin-left: 46px; }
+  .row .chip { margin-left: auto; }
   .row::after { display: none; }
   .sec-head, .toolbar { padding-left: 16px; padding-right: 16px; }
   .card > table.grid { width: calc(100% - 32px); margin: 0 16px 6px; }
@@ -457,7 +558,8 @@ body.dragging, body.dragging .sheet { transition: none; }
   table.grid td.label { width: auto; white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) {
-  body, .sheet, .scrim, .row::after, .row, .switch .track, .switch .track::after { transition: none; }
+  body, .sheet, .scrim, .row::after, .row, .switch .track, .switch .track::after,
+  .twist::before { transition: none; }
 }
 /* On paper there is no clicking, so every diff is printed under its own row and
    the chrome that only answers a pointer is left out. */
@@ -469,8 +571,66 @@ body.dragging, body.dragging .sheet { transition: none; }
     border-left: 0; box-shadow: none; }
   body.sheet-open { padding-right: 0; overflow: visible; }
   .file .body[hidden] { display: block; }
+  .folder.collapsed > .kids { display: block; }
 }
 .hidden { display: none !important; }
+
+/* ---- the version history ------------------------------------------- */
+/* One line down the left with a node per release, newest at the top, so the
+   page reads as what happened in order. The change each release made is a
+   panel of its own and the whole panel is the link: it is the one thing on
+   the row a reader came to click. */
+.timeline { list-style: none; margin: 0; padding: 4px 20px 14px; }
+.tl-item { position: relative; display: flex; gap: 16px; padding: 0 0 18px; }
+.tl-item:last-child { padding-bottom: 4px; }
+.tl-item::before { content: ""; position: absolute; left: 6px; top: 18px; bottom: -4px; width: 2px;
+  background: var(--rule); }
+.tl-item:last-child::before { display: none; }
+.tl-node { position: relative; z-index: 1; flex: 0 0 auto; width: 14px; height: 14px; margin-top: 5px;
+  border-radius: 50%; background: var(--card); border: 2px solid var(--border); }
+.tl-item.latest .tl-node { border-color: var(--accent); background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-wash); }
+.tl-body { flex: 1; min-width: 0; }
+.tl-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 24px; }
+.tl-ver { font-family: var(--mono); font-weight: 650; font-size: 14px; color: var(--text); }
+.tl-ver:hover { color: var(--accent); text-decoration: none; }
+.tl-when { margin-left: auto; color: var(--faint); font-size: 12.5px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.tl-change { display: flex; align-items: center; gap: 16px; margin-top: 8px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text);
+  transition: border-color .15s, background .15s, box-shadow .15s; }
+a.tl-change:hover { text-decoration: none; border-color: var(--accent-edge); background: var(--card);
+  box-shadow: var(--shadow); }
+a.tl-change:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tl-change.first { background: none; border-style: dashed; }
+.tl-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.tl-what { font-weight: 600; font-size: 14.5px; letter-spacing: -0.01em; }
+.tl-what .ai-mark { font-size: 13px; }
+.tl-sum { color: var(--muted); font-size: 13px; }
+.tl-sum .chip { margin-left: 6px; vertical-align: 1px; }
+.tl-nums { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 2px;
+  font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tl-num { display: inline-flex; align-items: center; gap: 6px; }
+.tl-num .add, .tl-num .del { font-weight: 600; }
+.warn-text { color: var(--warn-fg); }
+.tl-open { flex: 0 0 auto; color: var(--accent); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.tl-open::after { content: " →"; }
+.tl-alert { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.tl-moved { font-size: 12.5px; padding: 3px 10px; border-radius: 8px; background: var(--warn-bg);
+  border: 1px solid var(--warn-edge); color: var(--warn-fg); max-width: 100%; overflow-wrap: anywhere; }
+.tl-moved .del, .tl-moved .add { font-family: var(--mono); font-size: 12px; }
+.tl-meta { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px;
+  color: var(--faint); font-size: 12.5px; }
+.tl-meta .mono { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.tl-meta .sep { color: var(--border); }
+@media (max-width: 640px) {
+  .timeline { padding-left: 16px; padding-right: 16px; }
+  .tl-when { margin-left: 0; flex-basis: 100%; }
+  .tl-change { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tl-change { transition: none; }
+}
 
 /* ---- the AI summary --------------------------------------------------- */
 /* The card a model's explanation is drawn in. It sits above the numbers
@@ -588,7 +748,9 @@ JS = """
   var search = document.getElementById('filter');
   var vendorToggle = document.getElementById('vendor');
   var counter = document.getElementById('shown-count');
+  var list = document.querySelector('.files');
   var files = Array.prototype.slice.call(document.querySelectorAll('.files .file'));
+  var folders = Array.prototype.slice.call(document.querySelectorAll('.files .folder'));
   var scrim = document.getElementById('scrim');
   var host = document.getElementById('sheet-body');
   var titleBox = document.getElementById('sheet-title');
@@ -607,6 +769,23 @@ JS = """
 
   function empty(node) {
     while (node && node.firstChild) { node.removeChild(node.firstChild); }
+  }
+
+  // Folding a folder only hides its rows; they stay in the list, so j and k
+  // still walk every file and the counter still counts them.
+  function fold(folder, open) {
+    folder.classList.toggle('collapsed', !open);
+    var row = folder.querySelector('.frow');
+    if (row) { row.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+  }
+
+  // Open every folder a file sits in, so a file reached some other way than
+  // by clicking it — j and k, or a file named in the AI summary — is never
+  // the open one while its row is folded out of sight.
+  function reveal(file) {
+    for (var node = file.parentNode; node && node !== list; node = node.parentNode) {
+      if (node.classList && node.classList.contains('folder')) { fold(node, true); }
+    }
   }
 
   // The sheet header says the same things the row does, so it is built from a
@@ -640,6 +819,7 @@ JS = """
     var row = file && file.querySelector('.row');
     if (!row || !host) { return; }
     park();
+    reveal(file);
     openFile = file;
     file.classList.add('active');
     row.setAttribute('aria-expanded', 'true');
@@ -683,7 +863,6 @@ JS = """
     var showVendor = vendorToggle ? vendorToggle.checked : true;
     var shown = 0;
     var total = 0;
-    var first = true;
     files.forEach(function (el) {
       var path = (el.getAttribute('data-path') || '').toLowerCase();
       var isVendor = el.getAttribute('data-vendor') === '1';
@@ -692,9 +871,22 @@ JS = """
       // count are sums of `data-files` rather than counts of rows.
       var covers = parseInt(el.getAttribute('data-files') || '1', 10);
       el.classList.toggle('hidden', !ok);
-      el.classList.toggle('first-shown', ok && first);
       total += covers;
-      if (ok) { shown += covers; first = false; }
+      if (ok) { shown += covers; }
+    });
+    // A folder stays on the list while anything in it does. One the reader
+    // folded is opened again while they are searching, since a match they
+    // cannot see reads as no match at all.
+    folders.forEach(function (folder) {
+      var any = !!folder.querySelector('.file:not(.hidden)');
+      folder.classList.toggle('hidden', !any);
+      if (any && term) { fold(folder, true); }
+    });
+    var first = true;
+    Array.prototype.slice.call(list ? list.children : []).forEach(function (el) {
+      var ok = !el.classList.contains('hidden');
+      el.classList.toggle('first-shown', ok && first);
+      if (ok) { first = false; }
     });
     if (counter) { counter.textContent = shown + ' of ' + total + ' files shown'; }
     // Leaving the sheet open on a file the filter just took off the list would
@@ -709,6 +901,14 @@ JS = """
       if (file === openFile) { close(); return; }
       opener = row;
       show(file, true);
+    });
+  });
+
+  folders.forEach(function (folder) {
+    var row = folder.querySelector('.frow');
+    if (!row) { return; }
+    row.addEventListener('click', function () {
+      fold(folder, folder.classList.contains('collapsed'));
     });
   });
 
@@ -778,6 +978,7 @@ JS = """
         if (vendorToggle) { vendorToggle.checked = true; }
         apply();
       }
+      reveal(file);
       var row = file.querySelector('.row');
       if (row && row.scrollIntoView) { row.scrollIntoView({block: 'center'}); }
       opener = row;
@@ -997,6 +1198,25 @@ def _split_path(path: str) -> str:
     return f'<span class="dir">{_esc(folder)}/</span>{_esc(name)}'
 
 
+def _rename_title(old: str, new: str) -> str:
+    """A rename written once, with only the part that moved written twice.
+
+    ``boto3-{1.34.0 → 1.35.20}.dist-info/METADATA`` rather than two
+    near-identical 90-character paths the reader has to compare by eye. The
+    folder both sides share is set apart in a ``dir`` span exactly as
+    :func:`_split_path` sets a directory apart, so the file tree can drop it —
+    the row already sits under that folder — while the sheet's heading, copied
+    from the same row, still shows the whole path. :func:`~.filetree.rename_parts`
+    decides where that folder ends, and is what files the row under it.
+    """
+    folder, rest, was, now, tail = filetree.rename_parts(old, new)
+    lead = f'<span class="dir">{_esc(folder)}/</span>' if folder else ""
+    return (
+        f'{lead}{_esc(rest)}<span class="ren"><span class="was">{_esc(was)}</span>'
+        f' → {_esc(now)}</span>{_esc(tail)}'
+    )
+
+
 #: How many squares the diffstat bar draws, split between added and removed.
 BAR_CELLS = 5
 
@@ -1042,8 +1262,10 @@ def _file_block(
 ) -> str:
     """One row of the file list, carrying the diff the sheet opens when it is clicked.
 
-    The row is what the reader scans — kind, icon, path, counts — and ``body``
-    is what opens beside it. The body ships inside the row's own element rather
+    The row is what the reader scans — icon, name, counts, kind — and ``body``
+    is what opens beside it. The kind sits at the far end rather than in front
+    of the name, so the names can step in under their folders and the kinds
+    still line up in one column down the right. The body ships inside the row's own element rather
     than in a second list keyed by path, so a block stays one self-contained
     thing to filter, hide or print; the script moves that element into the sheet
     and back out again, which is why no diff is ever on the page twice.
@@ -1064,9 +1286,9 @@ def _file_block(
         f'<article class="file" data-path="{_esc(path_key)}" '
         f'data-vendor="{1 if is_vendor else 0}"{extra}>'
         '<button class="row" type="button" aria-expanded="false" aria-controls="sheet">'
-        f'<span class="chip {_esc(chip_class)}">{_esc(chip_text)}</span>'
         f'<span class="path">{icon}<span class="p">{title}</span>{note_html}</span>'
         f'<span class="stat-line">{stat}</span>'
+        f'<span class="chip {_esc(chip_class)}">{_esc(chip_text)}</span>'
         "</button>"
         f'<div class="body" hidden>{body}</div>'
         "</article>"
@@ -1077,9 +1299,8 @@ def _render_file(change: FileChange, a_root: Path | None = None, b_root: Path | 
                  ai_note: str = "") -> str:
     """Render one file's change as a list row and the diff table behind it.
 
-    A rename is titled as one file with only the moved part written twice
-    (``boto3-{1.34.0 → 1.35.20}.dist-info/METADATA``), rather than as two
-    near-identical 90-character paths the reader has to compare by eye.
+    A rename is titled as one file with only the moved part written twice —
+    see :func:`_rename_title`.
 
     The version directories are passed through so the syntax highlighter can
     read the whole file: colouring a hunk correctly means knowing what was
@@ -1088,16 +1309,9 @@ def _render_file(change: FileChange, a_root: Path | None = None, b_root: Path | 
     line about this file, when there is one.
     """
     lang = language_of(change.path, change.lang)
-    # A rename is one file, not two. Written out in full twice, the two paths
-    # are near-identical and the reader has to diff 90 characters by eye to
-    # find the part that moved; so only that part is written twice.
     title = _split_path(change.path)
     if change.kind == "renamed" and change.old_path:
-        head, was, now, tail = rename_label(change.old_path, change.path)
-        title = (
-            f'{_esc(head)}<span class="ren"><span class="was">{_esc(was)}</span>'
-            f' → {_esc(now)}</span>{_esc(tail)}'
-        )
+        title = _rename_title(change.old_path, change.path)
     stat = ""
     if change.added_lines:
         stat += f'<span class="add">+{change.added_lines}</span>'
@@ -1234,11 +1448,7 @@ def _render_move(group: MoveGroup) -> str:
     members, so the "N of M files shown" counter stays a count of files: those
     members follow as blocks of their own and would otherwise be counted twice.
     """
-    head, was, now, tail = rename_label(*group.display_dirs)
-    title = (
-        f'{_esc(head)}<span class="ren"><span class="was">{_esc(was)}</span>'
-        f' → {_esc(now)}</span>{_esc(tail)}/'
-    )
+    title = _rename_title(*group.display_dirs) + "/"
     count = (
         f"{group.moved} files moved" if group.is_whole_dir
         else f"{group.moved} of {group.total_in_old_dir} files moved"
@@ -1274,6 +1484,59 @@ def _render_move(group: MoveGroup) -> str:
         is_vendor=group.is_vendor,
         files=group.moved - group.edited,
     )
+
+
+def _folder_block(folder: filetree.Folder, depth: int, inside: str) -> str:
+    """One folder of the file tree: a row that folds it, and everything in it underneath.
+
+    The row carries what the folder adds up to — its changed lines and how
+    many files — so a folded one still says how much it is hiding, and a
+    folder of 300 vendored files can be put away without losing count of them.
+    The tally sits where a file row has its kind, so the right-hand column
+    reads down the whole list.
+
+    ``depth`` reaches the stylesheet as ``--depth``, which is what steps each
+    row in. It is set once here rather than on every row: the files inside
+    inherit their folder's ``.kids`` value, which is why a row needs no inline
+    style however many of them there are. Folding is the script's job (see
+    :data:`JS`); without one every folder stays open, which is a complete page.
+    """
+    stat = ""
+    if folder.added:
+        stat += f'<span class="add">+{folder.added}</span>'
+    if folder.removed:
+        stat += f'<span class="del">−{folder.removed}</span>'
+    stat += _bar(folder.added, folder.removed)
+    tally = f'{folder.files:,} file{"s" if folder.files != 1 else ""}'
+    return (
+        f'<div class="folder" data-folder="{_esc(folder.path)}" style="--depth:{depth}">'
+        f'<button class="row frow" type="button" aria-expanded="true" '
+        f'title="Fold or unfold {_esc(folder.path)}/">'
+        f'<span class="path"><span class="twist" aria-hidden="true"></span>{icons.folder_icon()}'
+        f'<span class="p">{_esc(folder.name)}</span></span>'
+        f'<span class="stat-line">{stat}</span>'
+        f'<span class="chip tally">{tally}</span>'
+        "</button>"
+        f'<div class="kids" style="--depth:{depth + 1}">{inside}</div>'
+        "</div>"
+    )
+
+
+def _render_tree(folder: filetree.Folder, render_row: Callable[[filetree.Row], str],
+                 depth: int = 0) -> str:
+    """The file list as the folders the files live in: folders first, then the files, by name.
+
+    ``render_row`` turns one row of the tree into its block — :func:`_render_file`
+    or :func:`_render_move` with the page's arguments already bound. The root
+    has no row of its own, so the files at the top of the archive sit at the
+    top of the list rather than under a folder called nothing.
+    """
+    parts = [
+        _folder_block(sub, depth, _render_tree(sub, render_row, depth + 1))
+        for sub in folder.subfolders()
+    ]
+    parts.extend(render_row(row) for row in folder.sorted_rows())
+    return "\n".join(parts)
 
 
 def _stats(diff: VersionDiff) -> str:
@@ -1678,6 +1941,7 @@ NOSCRIPT = """
 .toolbar, .sheet, .scrim { display: none; }
 .row { cursor: default; }
 .row::after { display: none; }
+.twist { visibility: hidden; }
 .file .body[hidden] { display: block; }
 .copy { display: none; }
 """
@@ -1727,6 +1991,12 @@ def _sheet(diff: VersionDiff) -> str:
     )
 
 
+#: The λ in the top bar's mark: a hooked top, the long stroke down to a foot,
+#: and the short leg off it — the shape of the Lambda console's icon, drawn on
+#: a 24-unit grid to match the stroked glyphs elsewhere on the page.
+LOGO = ('<svg viewBox="0 0 24 24"><path d="M5 4h4.4l7.4 16H19.5"/>'
+        '<path d="M11.4 9.3 5.2 20"/></svg>')
+
 #: The magnifier drawn inside the filter box.
 SEARCH_GLYPH = "M7 12.2a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4zM10.8 10.8 14 14"
 
@@ -1771,13 +2041,13 @@ def _page(title: str, body: str, crumbs: list[Crumb], footer: str, *,
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_esc(title)}</title>
-<style>{CSS}{ICON_CSS}</style>
+<style>{font_css()}{CSS}{ICON_CSS}</style>
 {head}
 </head>
 <body>
 {before}
 <nav class="topbar"><div class="inner">
-  <span class="brand"><span class="logo" aria-hidden="true">λ</span><span class="name">lambda-watcher</span></span>
+  <span class="brand"><span class="logo" aria-hidden="true">{LOGO}</span><span class="name">lambda-watcher</span></span>
   {crumb_bar}
   <span class="when">Generated {_esc(_stamp_now())}</span>
 </div></nav>
@@ -1824,17 +2094,21 @@ def render_html(
     notes = ai.explanation.file_notes if ai is not None and ai.explanation is not None else {}
     ai_top, ai_offer = _ai_cards(ai, diff)
 
-    blocks: list[str] = []
+    rows: list[filetree.Row] = []
     for row in diff.file_rows():
-        if not isinstance(row, MoveGroup):
-            blocks.append(_render_file(row, diff.a_root, diff.b_root, notes.get(row.path, "")))
-            continue
-        # The group block reports the move; it has no room for a diff, so the
-        # members that were rewritten on the way keep their own blocks after it.
-        blocks.append(_render_move(row))
-        blocks.extend(
-            _render_file(c, diff.a_root, diff.b_root, notes.get(c.path, "")) for c in row.edited_members
-        )
+        rows.append(row)
+        if isinstance(row, MoveGroup):
+            # The group block reports the move; it has no room for a diff, so the
+            # members that were rewritten on the way keep their own blocks.
+            rows.extend(row.edited_members)
+
+    def render_row(row: filetree.Row) -> str:
+        """One block of the list, rendered against this page's two versions and notes."""
+        if isinstance(row, MoveGroup):
+            return _render_move(row)
+        return _render_file(row, diff.a_root, diff.b_root, notes.get(row.path, ""))
+
+    tree = filetree.build(rows)
     vendor_toggle = (
         '<label class="switch"><input type="checkbox" id="vendor" checked>'
         '<span class="track"></span>Show vendored files</label>'
@@ -1853,7 +2127,10 @@ def render_html(
             ' aria-label="Filter files by path"></label>'
             f'{vendor_toggle}<span class="sub" id="shown-count"></span></div>'
         )
-        listing = '<div class="files">{}</div>'.format("\n".join(blocks))
+        # A list with no folders in it has nothing to step in under, so it
+        # does not keep the room a folder's arrow would take.
+        flat = " data-flat" if not tree.folders else ""
+        listing = f'<div class="files"{flat}>{_render_tree(tree, render_row)}</div>'
         files = _section("File changes", toolbar + listing, count=sum(diff.counts().values()),
                          aside="click a file to open its diff")
     else:
@@ -1938,6 +2215,119 @@ def _ai_line(entry: dict[str, Any]) -> str:
     return f'<div class="ai-line">{_esc(headline)}{chip}</div>'
 
 
+def _step_numbers(entry: dict[str, Any]) -> str:
+    """The measured part of one step in the history: lines, findings, dependencies.
+
+    ``+24 −5 ■■■■□ · 3 new findings · 3 dependencies``. Every key is optional —
+    a history written by a caller that only knows the headline still renders,
+    just with less beside it.
+    """
+    parts: list[str] = []
+    lines = entry.get("diff_lines")
+    if lines:
+        added, removed = lines
+        parts.append(f'<span class="add">+{added:,}</span><span class="del">−{removed:,}</span>'
+                     f"{_bar(added, removed)}")
+    findings = entry.get("diff_findings") or 0
+    if findings:
+        parts.append(f'<span class="chip high">{findings} new finding{"s" if findings != 1 else ""}</span>')
+    deps = entry.get("diff_deps") or 0
+    if deps:
+        parts.append(f'<span>{deps} dependenc{"ies" if deps != 1 else "y"}</span>')
+    env = entry.get("diff_env") or 0
+    if env:
+        parts.append(f'<span class="warn-text">{env} new env var{"s" if env != 1 else ""}</span>')
+    return "".join(f'<span class="tl-num">{part}</span>' for part in parts)
+
+
+def _timeline_item(entry: dict[str, Any], older: dict[str, Any] | None, latest: bool) -> str:
+    """One release in the history: when it arrived, what it changed, and what it is.
+
+    The change is the part of the row worth reading, so it is the big target:
+    a panel holding the AI headline when there is one, the measured summary
+    either way, and the numbers beside it, all one link to the comparison.
+    What the version *is* — runtime, handler, size, the zip it came from —
+    is a quiet line underneath, except where it moved since the version
+    before, because a runtime that changed is a deploy decision.
+    """
+    seq = entry["seq"]
+    when = entry.get("ingested_at")
+    chips = '<span class="chip added">latest</span>' if latest else ""
+    if entry.get("label"):
+        chips += f'<span class="chip label">{_esc(entry["label"])}</span>'
+    head = (f'<div class="tl-head"><a class="tl-ver" id="v{seq:04d}" href="#v{seq:04d}">v{seq:04d}</a>'
+            f'{chips}<span class="tl-when" title="{_esc(format_ts(when))}">'
+            f'{_esc(relative_ts(when))} · {_esc(format_ts(when))}</span></div>')
+
+    href = entry.get("diff_href")
+    if href:
+        headline = entry.get("ai_headline")
+        risk = entry.get("ai_risk")
+        summary = entry.get("diff_summary") or "view the changes"
+        what = (f'<span class="tl-what"><span class="ai-mark" aria-hidden="true">✦</span> '
+                f'{_esc(headline)}</span><span class="tl-sum">{_esc(summary)}'
+                + (f' <span class="chip risk-{_esc(risk)}">{_esc(risk)} risk</span>' if risk else "")
+                + "</span>"
+                if headline else f'<span class="tl-what">{_esc(summary.capitalize())}</span>')
+        numbers = _step_numbers(entry)
+        change = (f'<a class="tl-change" href="{_esc(href)}"><span class="tl-text">{what}'
+                  + (f'<span class="tl-nums">{numbers}</span>' if numbers else "")
+                  + '</span><span class="tl-open">View changes</span></a>')
+    else:
+        change = ('<div class="tl-change first"><span class="tl-text"><span class="tl-what">'
+                  'First archived version</span><span class="tl-sum">Nothing older to compare it '
+                  "with: this is the first version, and every later one is measured against it."
+                  "</span></span></div>")
+
+    meta = []
+    moved = []
+    for key, label in (("runtime", "runtime"), ("handler", "handler")):
+        value = entry.get(key) or "?"
+        before = older.get(key) if older else None
+        if older is not None and before and before != entry.get(key):
+            moved.append(f'<span class="tl-moved">{label} <span class="del">{_esc(before)}</span>'
+                         f'<span class="arrow">→</span><span class="add">{_esc(value)}</span></span>')
+        else:
+            meta.append(f'<span class="mono">{_esc(value)}</span>')
+    size = entry.get("total_size", 0)
+    size_text = _esc(human_size(size))
+    if older is not None and older.get("total_size") is not None and size != older["total_size"]:
+        size_text += f' <span class="dim">({signed(size - older["total_size"])} B)</span>'
+    count = entry.get("file_count", 0)
+    meta.append(f'{count:,} file{"s" if count != 1 else ""}')
+    meta.append(size_text)
+    if entry.get("source_name"):
+        meta.append(f'from <span class="mono">{_esc(entry["source_name"])}</span>')
+    meta_html = '<span class="sep">·</span>'.join(meta)
+    moved_html = f'<div class="tl-alert">{"".join(moved)}</div>' if moved else ""
+    css = "tl-item latest" if latest else "tl-item"
+    return (f'<li class="{css}"><span class="tl-node" aria-hidden="true"></span><div class="tl-body">'
+            f'{head}{change}{moved_html}<div class="tl-meta">{meta_html}</div></div></li>')
+
+
+def _timeline_stats(versions: list[dict[str, Any]]) -> str:
+    """The rail over the history: how many versions, the newest, the first, and how the size moved."""
+    newest, oldest = versions[0], versions[-1]
+    size, first_size = newest.get("total_size", 0), oldest.get("total_size", 0)
+    many = len(versions) > 1
+    cells = [
+        (f"{len(versions):,}", "archived versions", "", ""),
+        (f"v{newest['seq']:04d}", "latest", relative_ts(newest.get("ingested_at")), ""),
+        (format_ts(oldest.get("ingested_at")).split(" ")[0], "first archived", "", ""),
+        (human_size(size), "package size", f"{signed(size - first_size)} B" if many else "",
+         f"vs v{oldest['seq']:04d}" if many else ""),
+        (newest.get("runtime") or "?", "runtime", "", ""),
+    ]
+    return '<div class="stats">' + "".join(
+        f'<div class="stat"><div class="v">{_esc(value)}'
+        + (f'<span class="delta">{_esc(aside)}</span>' if aside else "")
+        + f'</div><div class="k">{_esc(label)}'
+        + (f' <span class="hint">{_esc(hint)}</span>' if hint else "")
+        + "</div></div>"
+        for value, label, aside, hint in cells
+    ) + "</div>"
+
+
 def render_timeline(
     function_name: str,
     versions: list[dict[str, Any]],
@@ -1945,55 +2335,37 @@ def render_timeline(
     *,
     archive_href: str | None = None,
 ) -> str:
-    """Index page: every archived version of one function, newest first.
+    """Index page: every archived version of one function, newest first, as a timeline.
 
     ``versions`` entries carry the per-version stats plus ``diff_href`` /
     ``diff_summary`` describing the step from the previous version, and
     ``ai_headline`` / ``ai_risk`` when that step has been explained — which
     turns the history into a list of what each release *did*, not only how
-    many files it touched. ``archive_href`` links the top bar back to the
+    many files it touched. ``diff_lines``, ``diff_findings``, ``diff_deps`` and
+    ``diff_env`` add the step's numbers when the caller measured them; see
+    :func:`_step_numbers`. ``archive_href`` links the top bar back to the
     archive's front page, when the caller knows where that is.
-    """
-    rows: list[str] = []
-    for entry in versions:
-        seq = entry["seq"]
-        href = entry.get("diff_href")
-        step = (
-            f'<a href="{_esc(href)}">{_esc(entry.get("diff_summary") or "view diff")}</a>'
-            if href
-            else '<span class="dim">first version</span>'
-        )
-        step += _ai_line(entry)
-        label = (f' <span class="chip label">{_esc(entry["label"])}</span>'
-                 if entry.get("label") else "")
-        rows.append(
-            "<tr>"
-            f'<td class="mono"><strong>v{seq:04d}</strong>{label}</td>'
-            f'<td>{_esc(format_ts(entry.get("ingested_at")))}</td>'
-            f'<td class="mono">{_esc(entry.get("runtime") or "?")}</td>'
-            f'<td class="mono">{_esc(entry.get("handler") or "?")}</td>'
-            f'<td class="num">{entry.get("file_count", 0):,}</td>'
-            f'<td class="num">{_esc(human_size(entry.get("total_size", 0)))}</td>'
-            f'<td class="mono dim">{_esc(str(entry.get("source_name") or ""))}</td>'
-            f"<td>{step}</td>"
-            "</tr>"
-        )
 
+    Each release is a node on one line rather than a row of a table, because
+    the question this page answers is *what happened, in order* — and the
+    answer to that is a sentence per release, not eight columns of which the
+    reader wants one.
+    """
     count = len(versions)
-    table = f"""<div class="scroll"><table class="grid">
-    <thead><tr>
-      <th>version</th><th>archived</th><th>runtime</th><th>handler</th>
-      <th class="num">files</th><th class="num">size</th>
-      <th>downloaded as</th><th>change from previous</th>
-    </tr></thead>
-    <tbody>{''.join(rows)}</tbody>
-  </table></div>"""
+    items = "".join(
+        _timeline_item(entry, versions[i + 1] if i + 1 < count else None, latest=i == 0)
+        for i, entry in enumerate(versions)
+    )
+    listing = (f'<ol class="timeline">{items}</ol>' if versions else
+               '<div class="empty"><span class="big">Nothing archived for this function yet.</span>'
+               'Download its zip from the Lambda console and <span class="cmd">lw</span> picks it up.</div>')
     body = f"""  <header class="top">
     <div class="eyebrow">Version history</div>
     <h1>{_esc(function_name)}</h1>
     <div class="lead">{count} archived version{'s' if count != 1 else ''} · newest first</div>
   </header>
-  {_section("Versions", table, count=count)}"""
+  {_timeline_stats(versions) if versions else ""}
+  {_section("Releases", listing, count=count, aside="click a change to open its diff")}"""
     crumbs: list[Crumb] = [("All functions", archive_href), (function_name, None)]
     footer = f"Generated by {_esc(generated_by)} on {_esc(_stamp_now())}."
     return _page(f"{function_name} · version history", body, crumbs, footer)

@@ -42,6 +42,12 @@ Issues = "https://github.com/utkarsh5026/lambwatch/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The code font the HTML report embeds, and its licence, which has to travel
+# with it. Without this the wheel ships neither and the report quietly falls
+# back to a system monospace.
+[tool.setuptools.package-data]
+lambda_watcher = ["diffing/fonts/*.woff2", "diffing/fonts/OFL.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
