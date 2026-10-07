@@ -25,6 +25,9 @@
      both are literal values, and the eye reads them as the same thing. */
   --tk-c: #8b8f97; --tk-k: #a626a4; --tk-s: #50a14f; --tk-n: #986801;
   --tk-t: #986801; --tk-f: #4078f2; --tk-y: #0184bc;
+  /* What a model wrote wears its own colour, so it is never mistaken for
+     something the diff engine measured. */
+  --ai: #6b4fd8; --ai-wash: #f5f2ff; --ai-edge: #e3dbfd;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -37,6 +40,7 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 0 0 1px rgba(255, 255, 255, .01);
     --tk-c: #7f848e; --tk-k: #c678dd; --tk-s: #98c379; --tk-n: #d19a66;
     --tk-t: #d19a66; --tk-f: #61afef; --tk-y: #56b6c2;
+    --ai: #b3a1ff; --ai-wash: #1d1834; --ai-edge: #372d63;
   }
 }
 * { box-sizing: border-box; }
@@ -218,20 +222,56 @@ table.grid th.num { text-align: right; }
 /* ---- the file list --------------------------------------------------- */
 /* One panel of rows rather than a stack of cards, because the list is an index:
    the diff it points at opens beside it instead of pushing the rest of the
-   list down the page. A row is a button, since that is what it does. */
-.files { border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
-.file { border-top: 1px solid var(--rule); }
+   list down the page. A row is a button, since that is what it does.
+
+   The rows are a tree of the folders they live in, so the structure is drawn
+   rather than spelled out in every path. Where a row starts is arithmetic on
+   its depth: the margin, one step per level, and room for a folder's arrow,
+   which a file has none of but steps in past so its icon lines up under its
+   folder's name. */
+.files { --tree-x: 20px; --tree-step: 18px; --twist: 21px;
+  border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
+.file, .frow { border-top: 1px solid var(--rule); }
 /* Transparent rather than absent so every row is the same height, whichever
-   one the filter left at the top. */
-.file:first-child, .file.first-shown { border-top-color: transparent; }
+   one the filter left at the top. Only a top-level row can be first: a file
+   inside a folder always has its folder's row above it. */
+.files > .file:first-child, .files > .file.first-shown,
+.files > .folder:first-child > .frow, .files > .folder.first-shown > .frow {
+  border-top-color: transparent; }
 .row { display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 20px;
   font: inherit; color: var(--text); text-align: left; background: none; border: 0;
   cursor: pointer; transition: background .12s ease; }
+.files .row { padding-left: calc(var(--tree-x) + var(--depth, 0) * var(--tree-step) + var(--twist)); }
+.files .frow { padding-left: calc(var(--tree-x) + var(--depth, 0) * var(--tree-step)); }
+.files[data-flat] .row { padding-left: var(--tree-x); }
 .row:hover { background: var(--panel); }
 .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-/* One width for every kind, so the paths start in one column and the eye can
-   run straight down them. */
+/* One width for every kind, so the kinds stand in one column down the right
+   whatever depth the name beside them starts at. */
 .row .chip { min-width: 90px; }
+/* A row already sits under its folder, so the folder part of its path is left
+   out here. It is still in the markup: the sheet's heading is copied from the
+   row, and up there the whole path is what says which file is open. */
+.files .row .p > .dir { display: none; }
+/* A folder's row: the arrow that folds it, its name, and in the kind column
+   how many files it holds — a count, so drawn as text rather than a label. */
+.frow .p { font-weight: 600; }
+.frow::after { visibility: hidden; }
+.chip.tally { background: none; color: var(--faint); font-weight: 500; }
+.chip.tally::before { display: none; }
+.twist { position: relative; width: 12px; height: 16px; flex: 0 0 auto; }
+.twist::before { content: ""; position: absolute; left: 3px; top: 4px; width: 5px; height: 5px;
+  border: 1.6px solid var(--faint); border-top: 0; border-left: 0;
+  transform: rotate(45deg); transition: transform .15s ease; }
+.frow:hover .twist::before { border-color: var(--accent); }
+.folder.collapsed > .frow .twist::before { transform: translate(-1px, 2px) rotate(-45deg); }
+.folder.collapsed > .kids { display: none; }
+/* A guide down from each open folder's arrow to its last row, so a long folder
+   still shows which rows are in it once its own row has scrolled away. */
+.kids { position: relative; }
+.kids::before { content: ""; position: absolute; top: 0; bottom: 0; width: 1px; z-index: 1;
+  left: calc(var(--tree-x) + (var(--depth) - 1) * var(--tree-step) + 6px);
+  background: var(--border); pointer-events: none; }
 /* The chevron points where the diff will appear: to the side, not downwards.
    Drawn in CSS because a vendored diff runs to thousands of rows, and each one
    would otherwise carry its own copy of the glyph. */
@@ -414,9 +454,12 @@ body.dragging, body.dragging .sheet { transition: none; }
   header.top { padding-top: 24px; }
   h1 { font-size: 23px; }
   .stat { flex-basis: 50%; border-top: 1px solid var(--rule); }
+  .files { --tree-x: 16px; --tree-step: 12px; }
   .row { flex-wrap: wrap; padding: 10px 16px; row-gap: 6px; }
-  .row .path { flex-basis: calc(100% - 110px); }
-  .row .stat-line { margin-left: 102px; flex-wrap: wrap; white-space: normal; }
+  .row .path { flex-basis: 100%; }
+  .row .stat-line { margin-left: 25px; flex-wrap: wrap; white-space: normal; }
+  .frow .stat-line { margin-left: 46px; }
+  .row .chip { margin-left: auto; }
   .row::after { display: none; }
   .sec-head, .toolbar { padding-left: 16px; padding-right: 16px; }
   .card > table.grid { width: calc(100% - 32px); margin: 0 16px 6px; }
@@ -424,7 +467,8 @@ body.dragging, body.dragging .sheet { transition: none; }
   table.grid td.label { width: auto; white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) {
-  body, .sheet, .scrim, .row::after, .row, .switch .track, .switch .track::after { transition: none; }
+  body, .sheet, .scrim, .row::after, .row, .switch .track, .switch .track::after,
+  .twist::before { transition: none; }
 }
 /* On paper there is no clicking, so every diff is printed under its own row and
    the chrome that only answers a pointer is left out. */
@@ -436,11 +480,118 @@ body.dragging, body.dragging .sheet { transition: none; }
     border-left: 0; box-shadow: none; }
   body.sheet-open { padding-right: 0; overflow: visible; }
   .file .body[hidden] { display: block; }
+  .folder.collapsed > .kids { display: block; }
 }
 .hidden { display: none !important; }
+
+/* ---- the AI summary --------------------------------------------------- */
+/* The card a model's explanation is drawn in. It sits above the numbers
+   because it is the one part of the page written as sentences — the part to
+   read first — and it is tinted violet throughout so nothing in it is ever
+   taken for a measurement. Every file it mentions is a button that opens that
+   file's diff, so a claim is one click from the lines it is about. */
+.card.ai { border-color: var(--ai-edge); overflow: hidden; }
+.card.ai > .sec-head { background: var(--ai-wash); border-bottom: 1px solid var(--ai-edge); }
+.card.ai h2 { color: var(--ai); }
+.ai-mark { color: var(--ai); font-size: 15px; line-height: 1; }
+.ai-body { padding: 16px 20px 6px; }
+.ai-headline { font-size: 17px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.4;
+  margin: 0 0 8px; color: var(--text); }
+.ai-summary { margin: 0 0 10px; color: var(--text); max-width: 78ch; white-space: pre-wrap; }
+.ai-why { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+.ai-cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 8px 28px;
+  margin-top: 6px; }
+.ai-cols.single { grid-template-columns: minmax(0, 1fr); }
+.ai-block h3 { font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--faint); margin: 12px 0 8px; display: flex; align-items: center; gap: 8px; }
+.ai-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.ai-list li { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0;
+  border-top: 1px solid var(--rule); }
+.ai-list li:first-child { border-top: none; padding-top: 2px; }
+.ai-list .chip { min-width: 98px; justify-content: flex-start; margin-top: 1px; }
+.ai-block h3 .count { text-transform: none; letter-spacing: 0; }
+.ai-list .what { min-width: 0; }
+.ai-list b { font-weight: 600; }
+.ai-list p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.ai-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ai-file { font: 500 11.5px/1.5 var(--mono); padding: 1px 8px; border-radius: 6px; cursor: pointer;
+  background: var(--sunken); border: 1px solid var(--border); color: var(--text);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-file:hover { border-color: var(--ai); color: var(--ai); }
+.ai-file:focus-visible { outline: 2px solid var(--ai); outline-offset: 1px; }
+span.ai-file { cursor: default; }
+span.ai-file:hover { border-color: var(--border); color: var(--text); }
+.chip.risk-high, .chip.k-security, .chip.k-removal { background: var(--del-gutter); color: var(--del-fg); }
+.chip.risk-medium, .chip.k-config, .chip.k-dependency { background: var(--warn-bg); color: var(--warn-fg); }
+.chip.risk-low, .chip.k-feature { background: var(--add-gutter); color: var(--add-fg); }
+.chip.k-fix, .chip.k-behaviour { background: var(--accent-wash); color: var(--accent); }
+.chip.ai-chip { background: var(--ai-wash); color: var(--ai); }
+.ai-check { list-style: none; margin: 0 0 8px; padding: 0; }
+.ai-check li { padding: 5px 0; }
+.ai-check label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.ai-check input { margin: 3px 0 0; accent-color: var(--ai); width: 15px; height: 15px; flex: 0 0 auto; }
+.ai-check input:checked + span { color: var(--faint); text-decoration: line-through; }
+.ai-foot { padding: 10px 20px 12px; border-top: 1px solid var(--rule); background: var(--panel);
+  color: var(--faint); font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px 14px;
+  align-items: center; }
+.ai-foot .grow { flex: 1 1 320px; }
+.cmdcopy { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.cmdcopy .cmd { overflow: hidden; text-overflow: ellipsis; }
+.copy { font: 600 11.5px/1.4 var(--sans); padding: 3px 9px; border-radius: 6px; cursor: pointer;
+  background: var(--card); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
+.copy:hover { color: var(--ai); border-color: var(--ai); }
+.copy.copied { color: var(--add-fg); border-color: var(--add-fg); }
+/* A card with nothing written yet is one line: what would appear, and the
+   command that makes it. It sits under the numbers, not over them, since it
+   is an offer rather than an answer. */
+.ai-offer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 20px; }
+.ai-offer .grow { flex: 1 1 360px; color: var(--muted); }
+.ai-offer .grow b { color: var(--text); font-weight: 600; }
+.ai-offer .cmds { display: flex; flex-direction: column; gap: 6px; }
+.ai-status { padding: 12px 20px; border-bottom: 1px solid var(--ai-edge); background: var(--panel);
+  color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.ai-status.bad { background: var(--warn-bg); color: var(--warn-fg); border-bottom-color: var(--warn-edge); }
+.card.ai.failed { border-color: var(--warn-edge); }
+.card.ai.failed > .sec-head { background: var(--warn-bg); border-bottom-color: var(--warn-edge); }
+.card.ai.failed h2, .card.ai.failed .ai-mark { color: var(--warn-fg); }
+/* While an explanation is being written the mark pulses, so an open page
+   visibly has something coming rather than looking finished and sparse. */
+.ai-wait .ai-mark { animation: ai-pulse 1.4s ease-in-out infinite; }
+@keyframes ai-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+.ai-late .ai-wait-on { display: none; }
+.ai-wait-late, .ai-offer .cmds.ai-wait-late { display: none; }
+.ai-late .ai-wait-late { display: inline; }
+.ai-late .ai-offer .cmds.ai-wait-late { display: flex; }
+.cmds .step { color: var(--faint); font-size: 11.5px; font-weight: 600; width: 14px;
+  display: inline-block; }
+/* The model's one-line note on a file, under its path in the list and in the
+   sheet's heading. */
+.row .path, .sheet-title .path { flex-wrap: wrap; row-gap: 2px; }
+.ai-note { flex-basis: 100%; padding-left: 25px; color: var(--muted); font-size: 12.5px;
+  line-height: 1.45; font-family: var(--sans); }
+.ai-note::before { content: "✦ "; color: var(--ai); }
+.ai-line { margin-top: 3px; color: var(--muted); font-size: 12.5px; white-space: normal; }
+.ai-line::before { content: "✦ "; color: var(--ai); }
+.ai-line .chip { margin-left: 6px; vertical-align: 1px; }
+@media (max-width: 860px) {
+  .ai-cols { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .ai-body, .ai-foot, .ai-offer, .ai-status { padding-left: 16px; padding-right: 16px; }
+  .ai-list li { flex-direction: column; gap: 4px; }
+  .ai-list .chip { min-width: 0; align-self: flex-start; }
+  .ai-note { padding-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-wait .ai-mark { animation: none; }
+}
+@media print {
+  .copy, .ai-offer { display: none !important; }
+}
 svg.sprite { display: none; }
 .fic { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor;
   stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.fic-folder { color: #8b93a1; }
 .fic-python { color: #4b8bbe; }
 .fic-javascript { color: #c9a227; }
 .fic-typescript { color: #3178c6; }
@@ -482,7 +633,7 @@ svg.sprite { display: none; }
 <nav class="topbar"><div class="inner">
   <span class="brand"><span class="logo" aria-hidden="true">λ</span><span class="name">lambda-watcher</span></span>
   <span class="sep">/</span><div class="crumbs"><span>All functions</span><span class="sep">/</span><span class="here">order-processor</span></div>
-  <span class="when">Generated 2026-09-23 01:20</span>
+  <span class="when">Generated 2026-10-07 03:48</span>
 </div></nav>
 <div class="wrap">
   <header class="top">
@@ -496,9 +647,9 @@ svg.sprite { display: none; }
       <th class="num">files</th><th class="num">size</th>
       <th>downloaded as</th><th>change from previous</th>
     </tr></thead>
-    <tbody><tr><td class="mono"><strong>v0002</strong></td><td>2026-09-23 01:20</td><td class="mono">python</td><td class="mono">lambda_function.lambda_handler</td><td class="num">68</td><td class="num">9.2 KB</td><td class="mono dim">order-processor (1).zip</td><td><a href="v0001-v0002.html">2 added, 2 modified, 9 renamed, 55 vendored</a></td></tr><tr><td class="mono"><strong>v0001</strong></td><td>2026-09-23 01:20</td><td class="mono">python</td><td class="mono">lambda_function.lambda_handler</td><td class="num">61</td><td class="num">8.3 KB</td><td class="mono dim">order-processor.zip</td><td><span class="dim">first version</span></td></tr></tbody>
+    <tbody><tr><td class="mono"><strong>v0002</strong></td><td>2026-10-07 03:48</td><td class="mono">python</td><td class="mono">lambda_function.lambda_handler</td><td class="num">68</td><td class="num">9.2 KB</td><td class="mono dim">order-processor (1).zip</td><td><a href="v0001-v0002.html">2 added, 2 modified, 9 renamed, 55 vendored</a></td></tr><tr><td class="mono"><strong>v0001</strong></td><td>2026-10-07 03:48</td><td class="mono">python</td><td class="mono">lambda_function.lambda_handler</td><td class="num">61</td><td class="num">8.3 KB</td><td class="mono dim">order-processor.zip</td><td><span class="dim">first version</span></td></tr></tbody>
   </table></div></section>
-  <footer>Generated by lambda-watcher on 2026-09-23 01:20.</footer>
+  <footer>Generated by lambda-watcher on 2026-10-07 03:48.</footer>
 </div>
 
 </body>

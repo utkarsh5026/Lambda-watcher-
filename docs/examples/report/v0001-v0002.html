@@ -25,6 +25,9 @@
      both are literal values, and the eye reads them as the same thing. */
   --tk-c: #8b8f97; --tk-k: #a626a4; --tk-s: #50a14f; --tk-n: #986801;
   --tk-t: #986801; --tk-f: #4078f2; --tk-y: #0184bc;
+  /* What a model wrote wears its own colour, so it is never mistaken for
+     something the diff engine measured. */
+  --ai: #6b4fd8; --ai-wash: #f5f2ff; --ai-edge: #e3dbfd;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -37,6 +40,7 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 0 0 1px rgba(255, 255, 255, .01);
     --tk-c: #7f848e; --tk-k: #c678dd; --tk-s: #98c379; --tk-n: #d19a66;
     --tk-t: #d19a66; --tk-f: #61afef; --tk-y: #56b6c2;
+    --ai: #b3a1ff; --ai-wash: #1d1834; --ai-edge: #372d63;
   }
 }
 * { box-sizing: border-box; }
@@ -218,20 +222,56 @@ table.grid th.num { text-align: right; }
 /* ---- the file list --------------------------------------------------- */
 /* One panel of rows rather than a stack of cards, because the list is an index:
    the diff it points at opens beside it instead of pushing the rest of the
-   list down the page. A row is a button, since that is what it does. */
-.files { border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
-.file { border-top: 1px solid var(--rule); }
+   list down the page. A row is a button, since that is what it does.
+
+   The rows are a tree of the folders they live in, so the structure is drawn
+   rather than spelled out in every path. Where a row starts is arithmetic on
+   its depth: the margin, one step per level, and room for a folder's arrow,
+   which a file has none of but steps in past so its icon lines up under its
+   folder's name. */
+.files { --tree-x: 20px; --tree-step: 18px; --twist: 21px;
+  border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
+.file, .frow { border-top: 1px solid var(--rule); }
 /* Transparent rather than absent so every row is the same height, whichever
-   one the filter left at the top. */
-.file:first-child, .file.first-shown { border-top-color: transparent; }
+   one the filter left at the top. Only a top-level row can be first: a file
+   inside a folder always has its folder's row above it. */
+.files > .file:first-child, .files > .file.first-shown,
+.files > .folder:first-child > .frow, .files > .folder.first-shown > .frow {
+  border-top-color: transparent; }
 .row { display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 20px;
   font: inherit; color: var(--text); text-align: left; background: none; border: 0;
   cursor: pointer; transition: background .12s ease; }
+.files .row { padding-left: calc(var(--tree-x) + var(--depth, 0) * var(--tree-step) + var(--twist)); }
+.files .frow { padding-left: calc(var(--tree-x) + var(--depth, 0) * var(--tree-step)); }
+.files[data-flat] .row { padding-left: var(--tree-x); }
 .row:hover { background: var(--panel); }
 .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-/* One width for every kind, so the paths start in one column and the eye can
-   run straight down them. */
+/* One width for every kind, so the kinds stand in one column down the right
+   whatever depth the name beside them starts at. */
 .row .chip { min-width: 90px; }
+/* A row already sits under its folder, so the folder part of its path is left
+   out here. It is still in the markup: the sheet's heading is copied from the
+   row, and up there the whole path is what says which file is open. */
+.files .row .p > .dir { display: none; }
+/* A folder's row: the arrow that folds it, its name, and in the kind column
+   how many files it holds — a count, so drawn as text rather than a label. */
+.frow .p { font-weight: 600; }
+.frow::after { visibility: hidden; }
+.chip.tally { background: none; color: var(--faint); font-weight: 500; }
+.chip.tally::before { display: none; }
+.twist { position: relative; width: 12px; height: 16px; flex: 0 0 auto; }
+.twist::before { content: ""; position: absolute; left: 3px; top: 4px; width: 5px; height: 5px;
+  border: 1.6px solid var(--faint); border-top: 0; border-left: 0;
+  transform: rotate(45deg); transition: transform .15s ease; }
+.frow:hover .twist::before { border-color: var(--accent); }
+.folder.collapsed > .frow .twist::before { transform: translate(-1px, 2px) rotate(-45deg); }
+.folder.collapsed > .kids { display: none; }
+/* A guide down from each open folder's arrow to its last row, so a long folder
+   still shows which rows are in it once its own row has scrolled away. */
+.kids { position: relative; }
+.kids::before { content: ""; position: absolute; top: 0; bottom: 0; width: 1px; z-index: 1;
+  left: calc(var(--tree-x) + (var(--depth) - 1) * var(--tree-step) + 6px);
+  background: var(--border); pointer-events: none; }
 /* The chevron points where the diff will appear: to the side, not downwards.
    Drawn in CSS because a vendored diff runs to thousands of rows, and each one
    would otherwise carry its own copy of the glyph. */
@@ -414,9 +454,12 @@ body.dragging, body.dragging .sheet { transition: none; }
   header.top { padding-top: 24px; }
   h1 { font-size: 23px; }
   .stat { flex-basis: 50%; border-top: 1px solid var(--rule); }
+  .files { --tree-x: 16px; --tree-step: 12px; }
   .row { flex-wrap: wrap; padding: 10px 16px; row-gap: 6px; }
-  .row .path { flex-basis: calc(100% - 110px); }
-  .row .stat-line { margin-left: 102px; flex-wrap: wrap; white-space: normal; }
+  .row .path { flex-basis: 100%; }
+  .row .stat-line { margin-left: 25px; flex-wrap: wrap; white-space: normal; }
+  .frow .stat-line { margin-left: 46px; }
+  .row .chip { margin-left: auto; }
   .row::after { display: none; }
   .sec-head, .toolbar { padding-left: 16px; padding-right: 16px; }
   .card > table.grid { width: calc(100% - 32px); margin: 0 16px 6px; }
@@ -424,7 +467,8 @@ body.dragging, body.dragging .sheet { transition: none; }
   table.grid td.label { width: auto; white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) {
-  body, .sheet, .scrim, .row::after, .row, .switch .track, .switch .track::after { transition: none; }
+  body, .sheet, .scrim, .row::after, .row, .switch .track, .switch .track::after,
+  .twist::before { transition: none; }
 }
 /* On paper there is no clicking, so every diff is printed under its own row and
    the chrome that only answers a pointer is left out. */
@@ -436,11 +480,118 @@ body.dragging, body.dragging .sheet { transition: none; }
     border-left: 0; box-shadow: none; }
   body.sheet-open { padding-right: 0; overflow: visible; }
   .file .body[hidden] { display: block; }
+  .folder.collapsed > .kids { display: block; }
 }
 .hidden { display: none !important; }
+
+/* ---- the AI summary --------------------------------------------------- */
+/* The card a model's explanation is drawn in. It sits above the numbers
+   because it is the one part of the page written as sentences — the part to
+   read first — and it is tinted violet throughout so nothing in it is ever
+   taken for a measurement. Every file it mentions is a button that opens that
+   file's diff, so a claim is one click from the lines it is about. */
+.card.ai { border-color: var(--ai-edge); overflow: hidden; }
+.card.ai > .sec-head { background: var(--ai-wash); border-bottom: 1px solid var(--ai-edge); }
+.card.ai h2 { color: var(--ai); }
+.ai-mark { color: var(--ai); font-size: 15px; line-height: 1; }
+.ai-body { padding: 16px 20px 6px; }
+.ai-headline { font-size: 17px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.4;
+  margin: 0 0 8px; color: var(--text); }
+.ai-summary { margin: 0 0 10px; color: var(--text); max-width: 78ch; white-space: pre-wrap; }
+.ai-why { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+.ai-cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 8px 28px;
+  margin-top: 6px; }
+.ai-cols.single { grid-template-columns: minmax(0, 1fr); }
+.ai-block h3 { font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--faint); margin: 12px 0 8px; display: flex; align-items: center; gap: 8px; }
+.ai-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.ai-list li { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0;
+  border-top: 1px solid var(--rule); }
+.ai-list li:first-child { border-top: none; padding-top: 2px; }
+.ai-list .chip { min-width: 98px; justify-content: flex-start; margin-top: 1px; }
+.ai-block h3 .count { text-transform: none; letter-spacing: 0; }
+.ai-list .what { min-width: 0; }
+.ai-list b { font-weight: 600; }
+.ai-list p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.ai-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ai-file { font: 500 11.5px/1.5 var(--mono); padding: 1px 8px; border-radius: 6px; cursor: pointer;
+  background: var(--sunken); border: 1px solid var(--border); color: var(--text);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-file:hover { border-color: var(--ai); color: var(--ai); }
+.ai-file:focus-visible { outline: 2px solid var(--ai); outline-offset: 1px; }
+span.ai-file { cursor: default; }
+span.ai-file:hover { border-color: var(--border); color: var(--text); }
+.chip.risk-high, .chip.k-security, .chip.k-removal { background: var(--del-gutter); color: var(--del-fg); }
+.chip.risk-medium, .chip.k-config, .chip.k-dependency { background: var(--warn-bg); color: var(--warn-fg); }
+.chip.risk-low, .chip.k-feature { background: var(--add-gutter); color: var(--add-fg); }
+.chip.k-fix, .chip.k-behaviour { background: var(--accent-wash); color: var(--accent); }
+.chip.ai-chip { background: var(--ai-wash); color: var(--ai); }
+.ai-check { list-style: none; margin: 0 0 8px; padding: 0; }
+.ai-check li { padding: 5px 0; }
+.ai-check label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.ai-check input { margin: 3px 0 0; accent-color: var(--ai); width: 15px; height: 15px; flex: 0 0 auto; }
+.ai-check input:checked + span { color: var(--faint); text-decoration: line-through; }
+.ai-foot { padding: 10px 20px 12px; border-top: 1px solid var(--rule); background: var(--panel);
+  color: var(--faint); font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px 14px;
+  align-items: center; }
+.ai-foot .grow { flex: 1 1 320px; }
+.cmdcopy { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.cmdcopy .cmd { overflow: hidden; text-overflow: ellipsis; }
+.copy { font: 600 11.5px/1.4 var(--sans); padding: 3px 9px; border-radius: 6px; cursor: pointer;
+  background: var(--card); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
+.copy:hover { color: var(--ai); border-color: var(--ai); }
+.copy.copied { color: var(--add-fg); border-color: var(--add-fg); }
+/* A card with nothing written yet is one line: what would appear, and the
+   command that makes it. It sits under the numbers, not over them, since it
+   is an offer rather than an answer. */
+.ai-offer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 20px; }
+.ai-offer .grow { flex: 1 1 360px; color: var(--muted); }
+.ai-offer .grow b { color: var(--text); font-weight: 600; }
+.ai-offer .cmds { display: flex; flex-direction: column; gap: 6px; }
+.ai-status { padding: 12px 20px; border-bottom: 1px solid var(--ai-edge); background: var(--panel);
+  color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.ai-status.bad { background: var(--warn-bg); color: var(--warn-fg); border-bottom-color: var(--warn-edge); }
+.card.ai.failed { border-color: var(--warn-edge); }
+.card.ai.failed > .sec-head { background: var(--warn-bg); border-bottom-color: var(--warn-edge); }
+.card.ai.failed h2, .card.ai.failed .ai-mark { color: var(--warn-fg); }
+/* While an explanation is being written the mark pulses, so an open page
+   visibly has something coming rather than looking finished and sparse. */
+.ai-wait .ai-mark { animation: ai-pulse 1.4s ease-in-out infinite; }
+@keyframes ai-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+.ai-late .ai-wait-on { display: none; }
+.ai-wait-late, .ai-offer .cmds.ai-wait-late { display: none; }
+.ai-late .ai-wait-late { display: inline; }
+.ai-late .ai-offer .cmds.ai-wait-late { display: flex; }
+.cmds .step { color: var(--faint); font-size: 11.5px; font-weight: 600; width: 14px;
+  display: inline-block; }
+/* The model's one-line note on a file, under its path in the list and in the
+   sheet's heading. */
+.row .path, .sheet-title .path { flex-wrap: wrap; row-gap: 2px; }
+.ai-note { flex-basis: 100%; padding-left: 25px; color: var(--muted); font-size: 12.5px;
+  line-height: 1.45; font-family: var(--sans); }
+.ai-note::before { content: "✦ "; color: var(--ai); }
+.ai-line { margin-top: 3px; color: var(--muted); font-size: 12.5px; white-space: normal; }
+.ai-line::before { content: "✦ "; color: var(--ai); }
+.ai-line .chip { margin-left: 6px; vertical-align: 1px; }
+@media (max-width: 860px) {
+  .ai-cols { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .ai-body, .ai-foot, .ai-offer, .ai-status { padding-left: 16px; padding-right: 16px; }
+  .ai-list li { flex-direction: column; gap: 4px; }
+  .ai-list .chip { min-width: 0; align-self: flex-start; }
+  .ai-note { padding-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-wait .ai-mark { animation: none; }
+}
+@media print {
+  .copy, .ai-offer { display: none !important; }
+}
 svg.sprite { display: none; }
 .fic { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor;
   stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.fic-folder { color: #8b93a1; }
 .fic-python { color: #4b8bbe; }
 .fic-javascript { color: #c9a227; }
 .fic-typescript { color: #3178c6; }
@@ -479,15 +630,17 @@ svg.sprite { display: none; }
 .toolbar, .sheet, .scrim { display: none; }
 .row { cursor: default; }
 .row::after { display: none; }
+.twist { visibility: hidden; }
 .file .body[hidden] { display: block; }
+.copy { display: none; }
 </style></noscript>
 </head>
 <body>
-<svg class="sprite" aria-hidden="true"><symbol id="g-code" viewBox="0 0 16 16"><path d="M6.2 4.4 2.6 8l3.6 3.6"/><path d="M9.8 4.4 13.4 8l-3.6 3.6"/></symbol><symbol id="g-markup" viewBox="0 0 16 16"><path d="M5.4 3.6 2 8l3.4 4.4"/><path d="M10.6 3.6 14 8l-3.4 4.4"/><path d="M9.4 2.6 6.6 13.4"/></symbol><symbol id="g-data" viewBox="0 0 16 16"><path d="M6.6 2.8c-1.4 0-2 .7-2 1.9v1.4c0 1-.6 1.6-1.6 1.9 1 .3 1.6.9 1.6 1.9v1.4c0 1.2.6 1.9 2 1.9"/><path d="M9.4 2.8c1.4 0 2 .7 2 1.9v1.4c0 1 .6 1.6 1.6 1.9-1 .3-1.6.9-1.6 1.9v1.4c0 1.2-.6 1.9-2 1.9"/></symbol><symbol id="g-doc" viewBox="0 0 16 16"><path d="M3.2 4.2h9.6"/><path d="M3.2 8h9.6"/><path d="M3.2 11.8h5.8"/></symbol><symbol id="g-terminal" viewBox="0 0 16 16"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2"/><path d="M4.9 6.9 7 9l-2.1 2.1"/><path d="M8.7 11.1h2.8"/></symbol><symbol id="g-style" viewBox="0 0 16 16"><path d="M8 2.4c2.6 2.7 4 4.7 4 6.3a4 4 0 0 1-8 0c0-1.6 1.4-3.6 4-6.3z"/></symbol><symbol id="g-lock" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="6.2" rx="1.6"/><path d="M5.6 7V5.4a2.4 2.4 0 0 1 4.8 0V7"/></symbol><symbol id="g-image" viewBox="0 0 16 16"><rect x="2.4" y="3.4" width="11.2" height="9.2" rx="1.8"/><circle cx="6" cy="6.9" r="1.1"/><path d="m3 11.8 3.2-3 2.4 2.3 2.2-1.8 2.8 2.5"/></symbol><symbol id="g-binary" viewBox="0 0 16 16"><path d="M8 2.4 13.6 5.4v5.2L8 13.6 2.4 10.6V5.4z"/><path d="M2.4 5.4 8 8.4l5.6-3"/><path d="M8 8.4v5.2"/></symbol></svg>
+<svg class="sprite" aria-hidden="true"><symbol id="g-code" viewBox="0 0 16 16"><path d="M6.2 4.4 2.6 8l3.6 3.6"/><path d="M9.8 4.4 13.4 8l-3.6 3.6"/></symbol><symbol id="g-markup" viewBox="0 0 16 16"><path d="M5.4 3.6 2 8l3.4 4.4"/><path d="M10.6 3.6 14 8l-3.4 4.4"/><path d="M9.4 2.6 6.6 13.4"/></symbol><symbol id="g-data" viewBox="0 0 16 16"><path d="M6.6 2.8c-1.4 0-2 .7-2 1.9v1.4c0 1-.6 1.6-1.6 1.9 1 .3 1.6.9 1.6 1.9v1.4c0 1.2.6 1.9 2 1.9"/><path d="M9.4 2.8c1.4 0 2 .7 2 1.9v1.4c0 1 .6 1.6 1.6 1.9-1 .3-1.6.9-1.6 1.9v1.4c0 1.2-.6 1.9-2 1.9"/></symbol><symbol id="g-doc" viewBox="0 0 16 16"><path d="M3.2 4.2h9.6"/><path d="M3.2 8h9.6"/><path d="M3.2 11.8h5.8"/></symbol><symbol id="g-terminal" viewBox="0 0 16 16"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2"/><path d="M4.9 6.9 7 9l-2.1 2.1"/><path d="M8.7 11.1h2.8"/></symbol><symbol id="g-style" viewBox="0 0 16 16"><path d="M8 2.4c2.6 2.7 4 4.7 4 6.3a4 4 0 0 1-8 0c0-1.6 1.4-3.6 4-6.3z"/></symbol><symbol id="g-lock" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="6.2" rx="1.6"/><path d="M5.6 7V5.4a2.4 2.4 0 0 1 4.8 0V7"/></symbol><symbol id="g-image" viewBox="0 0 16 16"><rect x="2.4" y="3.4" width="11.2" height="9.2" rx="1.8"/><circle cx="6" cy="6.9" r="1.1"/><path d="m3 11.8 3.2-3 2.4 2.3 2.2-1.8 2.8 2.5"/></symbol><symbol id="g-binary" viewBox="0 0 16 16"><path d="M8 2.4 13.6 5.4v5.2L8 13.6 2.4 10.6V5.4z"/><path d="M2.4 5.4 8 8.4l5.6-3"/><path d="M8 8.4v5.2"/></symbol><symbol id="g-folder" viewBox="0 0 16 16"><path d="M2.2 4.6c0-.8.6-1.4 1.4-1.4h2.5l1.6 1.7h4.7c.8 0 1.4.6 1.4 1.4v5.3c0 .8-.6 1.4-1.4 1.4H3.6c-.8 0-1.4-.6-1.4-1.4z"/></symbol></svg>
 <nav class="topbar"><div class="inner">
   <span class="brand"><span class="logo" aria-hidden="true">λ</span><span class="name">lambda-watcher</span></span>
   <span class="sep">/</span><div class="crumbs"><span>All functions</span><span class="sep">/</span><a href="index.html">order-processor</a><span class="sep">/</span><span class="here">v0001 → v0002</span></div>
-  <span class="when">Generated 2026-09-23 01:20</span>
+  <span class="when">Generated 2026-10-07 03:48</span>
 </div></nav>
 <div class="wrap">
   <header class="top">
@@ -496,17 +649,60 @@ svg.sprite { display: none; }
       <span class="ver">v0001<span class="arrow">→</span>v0002</span></h1>
     <div class="lead">2 added, 2 modified, 9 renamed, 55 vendored</div>
     <div class="stamps">
-      <span class="stamp"><b>v0001</b>archived 2026-09-23 01:20</span>
+      <span class="stamp"><b>v0001</b>archived 2026-10-07 03:48</span>
       <span class="to" aria-hidden="true">→</span>
-      <span class="stamp"><b>v0002</b>archived 2026-09-23 01:20</span>
+      <span class="stamp"><b>v0002</b>archived 2026-10-07 03:48</span>
     </div>
   </header>
 
+  
   <div class="stats"><div class="stat"><div class="v">13</div><div class="k">files changed</div></div><div class="stat"><div class="v"><span class="add">+24</span><span class="del">−5</span></div><div class="k">lines</div></div><div class="stat"><div class="v">3</div><div class="k">dependencies</div></div><div class="stat"><div class="v">9.2 KB<span class="delta">+886 B</span></div><div class="k">package size</div></div><div class="stat alert"><div class="v">3</div><div class="k">new findings</div></div><div class="stat" title="Hidden by diff.ignore_vendor; the dependency table explains the churn instead. `lw diff order-processor --vendor --html` rebuilds this page with them listed. The git mirror keeps them either way, so `lw diff order-processor --mirror` counts more changed files than this page does."><div class="v">55</div><div class="k">vendored files <span class="hint">not shown</span></div></div></div>
+  <section class="card ai" id="ai-summary"><div class="ai-offer"><span class="ai-mark" aria-hidden="true">✦</span><div class="grow"><b>Want this change explained in plain English?</b> Set up a model once — Anthropic, OpenAI, Azure OpenAI, or one running on your own machine — then explain this change. <span class="dim"><span class="cmd">lw ai off</span> hides this.</span></div><div class="cmds"><span><span class="step">1</span><span class="cmdcopy"><span class="cmd">lw ai add</span><button type="button" class="copy" data-copy="lw ai add" title="Copy this command">Copy</button></span></span><span><span class="step">2</span><span class="cmdcopy"><span class="cmd">lw explain order-processor --from 1 --to 2</span><button type="button" class="copy" data-copy="lw explain order-processor --from 1 --to 2" title="Copy this command">Copy</button></span></span></div></div></section>
   <section class="card danger"><div class="sec-head"><span class="dot"></span><h2>New findings</h2><span class="count">3</span><span class="aside">values are redacted</span></div><div class='scroll'><table class='grid'><thead><tr><th>severity</th><th>kind</th><th>where</th><th>detail</th></tr></thead><tbody><tr><td><span class="chip high">high</span></td><td>aws-access-key-id</td><td class="mono">config.py<span class="dim">:6</span></td><td class="mono dim">AKIA…LE (20 chars)</td></tr><tr><td><span class="chip high">high</span></td><td>stripe-key</td><td class="mono">config.py<span class="dim">:7</span></td><td class="mono dim">sk_l…dc (32 chars)</td></tr><tr><td><span class="chip low">low</span></td><td>debug-flag</td><td class="mono">config.py<span class="dim">:8</span></td><td class="mono dim">DEBUG = True</td></tr></tbody></table></div></section>
   <section class="card warn"><div class="sec-head"><span class="dot"></span><h2>Before you deploy</h2><span class="aside">configuration impact</span></div><table class='grid'><tbody><tr><td class='label'>Environment variables added</td><td><span class="tok added">QUEUE_URL</span><div class="sub">These must exist in the function&#x27;s environment configuration before you deploy.</div></td></tr><tr><td class='label'>AWS services added</td><td><span class="tok added">sqs</span><div class="sub">The execution role may need new IAM permissions.</div></td></tr></tbody></table></section>
   <section class="card"><div class="sec-head"><h2>Dependencies</h2><span class="count">3</span></div><div class='scroll'><table class='grid'><thead><tr><th>change</th><th>package</th><th>version</th><th>source</th></tr></thead><tbody><tr><td><span class="chip added">added</span></td><td class="mono"><strong>pydantic</strong></td><td class="mono"><span class="add">2.9.0</span></td><td class="dim">pip · installed</td></tr><tr><td><span class="chip changed">changed</span></td><td class="mono"><strong>boto3</strong></td><td class="mono"><span class="del">1.34.0</span><span class="arrow">→</span><span class="add">1.35.20</span></td><td class="dim">pip · installed</td></tr><tr><td><span class="chip changed">changed</span></td><td class="mono"><strong>botocore</strong></td><td class="mono"><span class="del">1.34.0</span><span class="arrow">→</span><span class="add">1.35.20</span></td><td class="dim">pip · installed</td></tr></tbody></table></div></section>
-  <section class="card"><div class="sec-head"><h2>File changes</h2><span class="count">13</span><span class="aside">click a file to open its diff</span></div><div class="toolbar"><label class="search"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 12.2a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4zM10.8 10.8 14 14"/></svg><input type="search" id="filter" placeholder="Filter by path…" autocomplete="off" aria-label="Filter files by path"></label><label class="switch"><input type="checkbox" id="vendor" checked><span class="track"></span>Show vendored files</label><span class="sub" id="shown-count"></span></div><div class="files"><article class="file" data-path="lambda_function.py " data-vendor="0"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip modified">modified</span><span class="path"><svg class="fic fic-python" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-code"/></svg><span class="p">lambda_function.py</span></span><span class="stat-line"><span class="add">+9</span><span class="del">−2</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="d"></i></span><span>+322 B</span></span></button><div class="body" hidden><div class="diff"><table>
+  <section class="card"><div class="sec-head"><h2>File changes</h2><span class="count">13</span><span class="aside">click a file to open its diff</span></div><div class="toolbar"><label class="search"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 12.2a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4zM10.8 10.8 14 14"/></svg><input type="search" id="filter" placeholder="Filter by path…" autocomplete="off" aria-label="Filter files by path"></label><label class="switch"><input type="checkbox" id="vendor" checked><span class="track"></span>Show vendored files</label><span class="sub" id="shown-count"></span></div><div class="files"><div class="folder" data-folder="helpers" style="--depth:0"><button class="row frow" type="button" aria-expanded="true" title="Fold or unfold helpers/"><span class="path"><span class="twist" aria-hidden="true"></span><svg class="fic fic-folder" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-folder"/></svg><span class="p">helpers</span></span><span class="stat-line"></span><span class="chip tally">1 file</span></button><div class="kids" style="--depth:1"><article class="file" data-path="helpers/__init__.py " data-vendor="0" data-key="helpers/__init__.py"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-python" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-code"/></svg><span class="p"><span class="dir">helpers/</span>__init__.py</span></span><span class="stat-line"></span><span class="chip added">added</span></button><div class="body" hidden><div class="note">No line diff shown (file is empty). 0 B → 0 B.</div></div></article></div></div>
+<div class="folder" data-folder="site-packages" style="--depth:0"><button class="row frow" type="button" aria-expanded="true" title="Fold or unfold site-packages/"><span class="path"><span class="twist" aria-hidden="true"></span><svg class="fic fic-folder" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-folder"/></svg><span class="p">site-packages</span></span><span class="stat-line"><span class="add">+2</span><span class="del">−2</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="a"></i><i class="d"></i><i class="d"></i><i class="n"></i></span></span><span class="chip tally">8 files</span></button><div class="kids" style="--depth:1"><article class="file" data-path="site-packages/boto3-1.35.20.dist-info/INSTALLER site-packages/boto3-1.35.20.dist-info/METADATA site-packages/boto3-1.35.20.dist-info/WHEEL site-packages/boto3-1.35.20.dist-info/top_level.txt site-packages/boto3-1.34.0.dist-info/INSTALLER site-packages/boto3-1.34.0.dist-info/METADATA site-packages/boto3-1.34.0.dist-info/WHEEL site-packages/boto3-1.34.0.dist-info/top_level.txt" data-vendor="1" data-files="3"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p"><span class="dir">site-packages/</span>boto3-1.<span class="ren"><span class="was">34.0</span> → 35.20</span>.dist-info/</span></span><span class="stat-line"><span>4 files moved</span><span class="del">1 edited</span><span class="add">+1</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+1 B</span></span><span class="chip renamed">moved</span></button><div class="body" hidden><ul class="moved-list"><li class="mono">INSTALLER</li><li class="mono">METADATA <span class="hint">edited</span></li><li class="mono">WHEEL</li><li class="mono">top_level.txt</li></ul></div></article>
+<article class="file" data-path="site-packages/boto3-1.35.20.dist-info/METADATA site-packages/boto3-1.34.0.dist-info/METADATA" data-vendor="1" data-key="site-packages/boto3-1.35.20.dist-info/METADATA"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p"><span class="dir">site-packages/</span>boto3-1.<span class="ren"><span class="was">34.0</span> → 35.20</span>.dist-info/METADATA</span></span><span class="stat-line"><span class="add">+1</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+1 B</span></span><span class="chip renamed">renamed</span></button><div class="body" hidden><div class="diff"><table>
+<tr class="hunk"><td colspan="4">@@ -1,4 +1,4 @@</td></tr>
+<tr><td class="ln">1</td><td class="ln">1</td><td class="mark"></td><td class="code">Metadata-Version: 2.1</td></tr>
+<tr><td class="ln">2</td><td class="ln">2</td><td class="mark"></td><td class="code">Name: boto3</td></tr>
+<tr class="del"><td class="ln">3</td><td class="ln"></td><td class="mark">−</td><td class="code">Version: 1.<span class="wd">34</span>.<span class="wd">0</span></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">3</td><td class="mark">+</td><td class="code">Version: 1.<span class="wd">35</span>.<span class="wd">20</span></td></tr>
+<tr><td class="ln">4</td><td class="ln">4</td><td class="mark"></td><td class="code">Summary: The AWS SDK for Python</td></tr>
+</table></div></div></article>
+<article class="file" data-path="site-packages/botocore-1.35.20.dist-info/INSTALLER site-packages/botocore-1.35.20.dist-info/METADATA site-packages/botocore-1.35.20.dist-info/WHEEL site-packages/botocore-1.35.20.dist-info/top_level.txt site-packages/botocore-1.34.0.dist-info/INSTALLER site-packages/botocore-1.34.0.dist-info/METADATA site-packages/botocore-1.34.0.dist-info/WHEEL site-packages/botocore-1.34.0.dist-info/top_level.txt" data-vendor="1" data-files="3"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p"><span class="dir">site-packages/</span>botocore-1.<span class="ren"><span class="was">34.0</span> → 35.20</span>.dist-info/</span></span><span class="stat-line"><span>4 files moved</span><span class="del">1 edited</span><span class="add">+1</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+1 B</span></span><span class="chip renamed">moved</span></button><div class="body" hidden><ul class="moved-list"><li class="mono">INSTALLER</li><li class="mono">METADATA <span class="hint">edited</span></li><li class="mono">WHEEL</li><li class="mono">top_level.txt</li></ul></div></article>
+<article class="file" data-path="site-packages/botocore-1.35.20.dist-info/METADATA site-packages/botocore-1.34.0.dist-info/METADATA" data-vendor="1" data-key="site-packages/botocore-1.35.20.dist-info/METADATA"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p"><span class="dir">site-packages/</span>botocore-1.<span class="ren"><span class="was">34.0</span> → 35.20</span>.dist-info/METADATA</span></span><span class="stat-line"><span class="add">+1</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+1 B</span></span><span class="chip renamed">renamed</span></button><div class="body" hidden><div class="diff"><table>
+<tr class="hunk"><td colspan="4">@@ -1,4 +1,4 @@</td></tr>
+<tr><td class="ln">1</td><td class="ln">1</td><td class="mark"></td><td class="code">Metadata-Version: 2.1</td></tr>
+<tr><td class="ln">2</td><td class="ln">2</td><td class="mark"></td><td class="code">Name: botocore</td></tr>
+<tr class="del"><td class="ln">3</td><td class="ln"></td><td class="mark">−</td><td class="code">Version: 1.<span class="wd">34</span>.<span class="wd">0</span></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">3</td><td class="mark">+</td><td class="code">Version: 1.<span class="wd">35</span>.<span class="wd">20</span></td></tr>
+<tr><td class="ln">4</td><td class="ln">4</td><td class="mark"></td><td class="code">Summary: Low-level, data-driven core of boto 3</td></tr>
+</table></div></div></article></div></div>
+<article class="file" data-path="config.py " data-vendor="0" data-key="config.py"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-python" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-code"/></svg><span class="p">config.py</span></span><span class="stat-line"><span class="add">+10</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i></span><span>+235 B</span></span><span class="chip added">added</span></button><div class="body" hidden><div class="diff"><table>
+<tr class="hunk"><td colspan="4">@@ -0,0 +1,10 @@</td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">1</td><td class="mark">+</td><td class="code"><span class="tk-s">&quot;&quot;&quot;Runtime configuration.</span></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">2</td><td class="mark">+</td><td class="code"></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">3</td><td class="mark">+</td><td class="code"><span class="tk-s">TODO: move these to Secrets Manager before this goes anywhere near production.</span></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">4</td><td class="mark">+</td><td class="code"><span class="tk-s">&quot;&quot;&quot;</span></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">5</td><td class="mark">+</td><td class="code"></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">6</td><td class="mark">+</td><td class="code">AWS_ACCESS_KEY_ID = <span class="tk-s">&quot;AKIA••••••••••••••••&quot;</span></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">7</td><td class="mark">+</td><td class="code">STRIPE_API_KEY = <span class="tk-s">&quot;sk_l••••••••••••••••••••••••••••&quot;</span></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">8</td><td class="mark">+</td><td class="code">DEBUG = <span class="tk-t">True</span></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">9</td><td class="mark">+</td><td class="code"></td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">10</td><td class="mark">+</td><td class="code">MAX_ITEMS = <span class="tk-n">50</span></td></tr>
+</table></div></div></article>
+<article class="file" data-path="helpers/db.py db.py" data-vendor="0" data-key="helpers/db.py"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-python" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-code"/></svg><span class="p"><span class="ren"><span class="was">db</span> → helpers/db</span>.py</span></span><span class="stat-line"><span class="add">+1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="n"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+33 B</span></span><span class="chip renamed">renamed</span></button><div class="body" hidden><div class="diff"><table>
+<tr class="hunk"><td colspan="4">@@ -9,5 +9,6 @@</td></tr>
+<tr><td class="ln">9</td><td class="ln">9</td><td class="mark"></td><td class="code">            <span class="tk-s">&quot;id&quot;</span>: order[<span class="tk-s">&quot;id&quot;</span>],</td></tr>
+<tr><td class="ln">10</td><td class="ln">10</td><td class="mark"></td><td class="code">            <span class="tk-s">&quot;items&quot;</span>: order[<span class="tk-s">&quot;items&quot;</span>],</td></tr>
+<tr><td class="ln">11</td><td class="ln">11</td><td class="mark"></td><td class="code">            <span class="tk-s">&quot;total&quot;</span>: <span class="tk-f">Decimal</span>(<span class="tk-f">str</span>(order[<span class="tk-s">&quot;total&quot;</span>])),</td></tr>
+<tr class="add"><td class="ln"></td><td class="ln">12</td><td class="mark">+</td><td class="code">            <span class="tk-s">&quot;status&quot;</span>: <span class="tk-s">&quot;PENDING&quot;</span>,</td></tr>
+<tr><td class="ln">12</td><td class="ln">13</td><td class="mark"></td><td class="code">        }</td></tr>
+<tr><td class="ln">13</td><td class="ln">14</td><td class="mark"></td><td class="code">    )</td></tr>
+</table></div></div></article>
+<article class="file" data-path="lambda_function.py " data-vendor="0" data-key="lambda_function.py"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-python" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-code"/></svg><span class="p">lambda_function.py</span></span><span class="stat-line"><span class="add">+9</span><span class="del">−2</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="d"></i></span><span>+322 B</span></span><span class="chip modified">modified</span></button><div class="body" hidden><div class="diff"><table>
 <tr class="hunk"><td colspan="4">@@ -1,16 +1,19 @@</td></tr>
 <tr class="del"><td class="ln">1</td><td class="ln"></td><td class="mark">−</td><td class="code"><span class="tk-s">&quot;&quot;&quot;Validate an incoming order<span class="wd"> and</span> record it.&quot;&quot;&quot;</span></td></tr>
 <tr class="add"><td class="ln"></td><td class="ln">1</td><td class="mark">+</td><td class="code"><span class="tk-s">&quot;&quot;&quot;Validate an incoming order<span class="wd">,</span> record it<span class="wd">, and queue it for fulfilment</span>.&quot;&quot;&quot;</span></td></tr>
@@ -541,54 +737,13 @@ svg.sprite { display: none; }
 <tr><td class="ln">23</td><td class="ln">30</td><td class="mark"></td><td class="code"></td></tr>
 <tr><td class="ln">24</td><td class="ln">31</td><td class="mark"></td><td class="code">    <span class="tk-k">return</span> {<span class="tk-s">&quot;statusCode&quot;</span>: <span class="tk-n">201</span>, <span class="tk-s">&quot;body&quot;</span>: json.<span class="tk-f">dumps</span>({<span class="tk-s">&quot;id&quot;</span>: order[<span class="tk-s">&quot;id&quot;</span>]})}</td></tr>
 </table></div></div></article>
-<article class="file" data-path="requirements.txt " data-vendor="0"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip modified">modified</span><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p">requirements.txt</span></span><span class="stat-line"><span class="add">+2</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i></span><span>+17 B</span></span></button><div class="body" hidden><div class="diff"><table>
+<article class="file" data-path="requirements.txt " data-vendor="0" data-key="requirements.txt"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p">requirements.txt</span></span><span class="stat-line"><span class="add">+2</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i></span><span>+17 B</span></span><span class="chip modified">modified</span></button><div class="body" hidden><div class="diff"><table>
 <tr class="hunk"><td colspan="4">@@ -1 +1,2 @@</td></tr>
 <tr class="del"><td class="ln">1</td><td class="ln"></td><td class="mark">−</td><td class="code">boto3==1.<span class="wd">34</span>.<span class="wd">0</span></td></tr>
 <tr class="add"><td class="ln"></td><td class="ln">1</td><td class="mark">+</td><td class="code">boto3==1.<span class="wd">35</span>.<span class="wd">20</span></td></tr>
 <tr class="add"><td class="ln"></td><td class="ln">2</td><td class="mark">+</td><td class="code">pydantic==2.9.0</td></tr>
-</table></div></div></article>
-<article class="file" data-path="config.py " data-vendor="0"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip added">added</span><span class="path"><svg class="fic fic-python" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-code"/></svg><span class="p">config.py</span></span><span class="stat-line"><span class="add">+10</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i></span><span>+235 B</span></span></button><div class="body" hidden><div class="diff"><table>
-<tr class="hunk"><td colspan="4">@@ -0,0 +1,10 @@</td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">1</td><td class="mark">+</td><td class="code"><span class="tk-s">&quot;&quot;&quot;Runtime configuration.</span></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">2</td><td class="mark">+</td><td class="code"></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">3</td><td class="mark">+</td><td class="code"><span class="tk-s">TODO: move these to Secrets Manager before this goes anywhere near production.</span></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">4</td><td class="mark">+</td><td class="code"><span class="tk-s">&quot;&quot;&quot;</span></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">5</td><td class="mark">+</td><td class="code"></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">6</td><td class="mark">+</td><td class="code">AWS_ACCESS_KEY_ID = <span class="tk-s">&quot;AKIA••••••••••••••••&quot;</span></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">7</td><td class="mark">+</td><td class="code">STRIPE_API_KEY = <span class="tk-s">&quot;sk_l••••••••••••••••••••••••••••&quot;</span></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">8</td><td class="mark">+</td><td class="code">DEBUG = <span class="tk-t">True</span></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">9</td><td class="mark">+</td><td class="code"></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">10</td><td class="mark">+</td><td class="code">MAX_ITEMS = <span class="tk-n">50</span></td></tr>
-</table></div></div></article>
-<article class="file" data-path="helpers/__init__.py " data-vendor="0"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip added">added</span><span class="path"><svg class="fic fic-python" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-code"/></svg><span class="p"><span class="dir">helpers/</span>__init__.py</span></span><span class="stat-line"></span></button><div class="body" hidden><div class="note">No line diff shown (file is empty). 0 B → 0 B.</div></div></article>
-<article class="file" data-path="helpers/db.py db.py" data-vendor="0"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip renamed">renamed</span><span class="path"><svg class="fic fic-python" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-code"/></svg><span class="p"><span class="ren"><span class="was">db</span> → helpers/db</span>.py</span></span><span class="stat-line"><span class="add">+1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="n"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+33 B</span></span></button><div class="body" hidden><div class="diff"><table>
-<tr class="hunk"><td colspan="4">@@ -9,5 +9,6 @@</td></tr>
-<tr><td class="ln">9</td><td class="ln">9</td><td class="mark"></td><td class="code">            <span class="tk-s">&quot;id&quot;</span>: order[<span class="tk-s">&quot;id&quot;</span>],</td></tr>
-<tr><td class="ln">10</td><td class="ln">10</td><td class="mark"></td><td class="code">            <span class="tk-s">&quot;items&quot;</span>: order[<span class="tk-s">&quot;items&quot;</span>],</td></tr>
-<tr><td class="ln">11</td><td class="ln">11</td><td class="mark"></td><td class="code">            <span class="tk-s">&quot;total&quot;</span>: <span class="tk-f">Decimal</span>(<span class="tk-f">str</span>(order[<span class="tk-s">&quot;total&quot;</span>])),</td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">12</td><td class="mark">+</td><td class="code">            <span class="tk-s">&quot;status&quot;</span>: <span class="tk-s">&quot;PENDING&quot;</span>,</td></tr>
-<tr><td class="ln">12</td><td class="ln">13</td><td class="mark"></td><td class="code">        }</td></tr>
-<tr><td class="ln">13</td><td class="ln">14</td><td class="mark"></td><td class="code">    )</td></tr>
-</table></div></div></article>
-<article class="file" data-path="site-packages/boto3-1.35.20.dist-info/INSTALLER site-packages/boto3-1.35.20.dist-info/METADATA site-packages/boto3-1.35.20.dist-info/WHEEL site-packages/boto3-1.35.20.dist-info/top_level.txt site-packages/boto3-1.34.0.dist-info/INSTALLER site-packages/boto3-1.34.0.dist-info/METADATA site-packages/boto3-1.34.0.dist-info/WHEEL site-packages/boto3-1.34.0.dist-info/top_level.txt" data-vendor="1" data-files="3"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip renamed">moved</span><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p">site-packages/boto3-1.<span class="ren"><span class="was">34.0</span> → 35.20</span>.dist-info/</span></span><span class="stat-line"><span>4 files moved</span><span class="del">1 edited</span><span class="add">+1</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+1 B</span></span></button><div class="body" hidden><ul class="moved-list"><li class="mono">INSTALLER</li><li class="mono">METADATA <span class="hint">edited</span></li><li class="mono">WHEEL</li><li class="mono">top_level.txt</li></ul></div></article>
-<article class="file" data-path="site-packages/boto3-1.35.20.dist-info/METADATA site-packages/boto3-1.34.0.dist-info/METADATA" data-vendor="1"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip renamed">renamed</span><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p">site-packages/boto3-1.<span class="ren"><span class="was">34.0</span> → 35.20</span>.dist-info/METADATA</span></span><span class="stat-line"><span class="add">+1</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+1 B</span></span></button><div class="body" hidden><div class="diff"><table>
-<tr class="hunk"><td colspan="4">@@ -1,4 +1,4 @@</td></tr>
-<tr><td class="ln">1</td><td class="ln">1</td><td class="mark"></td><td class="code">Metadata-Version: 2.1</td></tr>
-<tr><td class="ln">2</td><td class="ln">2</td><td class="mark"></td><td class="code">Name: boto3</td></tr>
-<tr class="del"><td class="ln">3</td><td class="ln"></td><td class="mark">−</td><td class="code">Version: 1.<span class="wd">34</span>.<span class="wd">0</span></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">3</td><td class="mark">+</td><td class="code">Version: 1.<span class="wd">35</span>.<span class="wd">20</span></td></tr>
-<tr><td class="ln">4</td><td class="ln">4</td><td class="mark"></td><td class="code">Summary: The AWS SDK for Python</td></tr>
-</table></div></div></article>
-<article class="file" data-path="site-packages/botocore-1.35.20.dist-info/INSTALLER site-packages/botocore-1.35.20.dist-info/METADATA site-packages/botocore-1.35.20.dist-info/WHEEL site-packages/botocore-1.35.20.dist-info/top_level.txt site-packages/botocore-1.34.0.dist-info/INSTALLER site-packages/botocore-1.34.0.dist-info/METADATA site-packages/botocore-1.34.0.dist-info/WHEEL site-packages/botocore-1.34.0.dist-info/top_level.txt" data-vendor="1" data-files="3"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip renamed">moved</span><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p">site-packages/botocore-1.<span class="ren"><span class="was">34.0</span> → 35.20</span>.dist-info/</span></span><span class="stat-line"><span>4 files moved</span><span class="del">1 edited</span><span class="add">+1</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+1 B</span></span></button><div class="body" hidden><ul class="moved-list"><li class="mono">INSTALLER</li><li class="mono">METADATA <span class="hint">edited</span></li><li class="mono">WHEEL</li><li class="mono">top_level.txt</li></ul></div></article>
-<article class="file" data-path="site-packages/botocore-1.35.20.dist-info/METADATA site-packages/botocore-1.34.0.dist-info/METADATA" data-vendor="1"><button class="row" type="button" aria-expanded="false" aria-controls="sheet"><span class="chip renamed">renamed</span><span class="path"><svg class="fic fic-text" viewBox="0 0 16 16" aria-hidden="true"><use href="#g-doc"/></svg><span class="p">site-packages/botocore-1.<span class="ren"><span class="was">34.0</span> → 35.20</span>.dist-info/METADATA</span></span><span class="stat-line"><span class="add">+1</span><span class="del">−1</span><span class="bar" aria-hidden="true"><i class="a"></i><i class="d"></i><i class="n"></i><i class="n"></i><i class="n"></i></span><span>+1 B</span></span></button><div class="body" hidden><div class="diff"><table>
-<tr class="hunk"><td colspan="4">@@ -1,4 +1,4 @@</td></tr>
-<tr><td class="ln">1</td><td class="ln">1</td><td class="mark"></td><td class="code">Metadata-Version: 2.1</td></tr>
-<tr><td class="ln">2</td><td class="ln">2</td><td class="mark"></td><td class="code">Name: botocore</td></tr>
-<tr class="del"><td class="ln">3</td><td class="ln"></td><td class="mark">−</td><td class="code">Version: 1.<span class="wd">34</span>.<span class="wd">0</span></td></tr>
-<tr class="add"><td class="ln"></td><td class="ln">3</td><td class="mark">+</td><td class="code">Version: 1.<span class="wd">35</span>.<span class="wd">20</span></td></tr>
-<tr><td class="ln">4</td><td class="ln">4</td><td class="mark"></td><td class="code">Summary: Low-level, data-driven core of boto 3</td></tr>
 </table></div></div></article></div></section>
-  <footer>Generated by lambda-watcher on 2026-09-23 01:20. Content hashes ignore zip timestamps, so re-downloading unchanged code does not create a new version.</footer>
+  <footer>Generated by lambda-watcher on 2026-10-07 03:48. Content hashes ignore zip timestamps, so re-downloading unchanged code does not create a new version.</footer>
 </div>
 <div class="scrim" id="scrim"></div><aside class="sheet" id="sheet" role="dialog" aria-labelledby="sheet-title"><div class="grip" id="sheet-grip" title="Drag to resize"></div><header class="sheet-head"><div class="sheet-bar"><div class="sheet-title" id="sheet-title"></div><div class="sheet-nav"><button type="button" class="iconbtn" id="sheet-prev" title="Previous file (k)" aria-label="Previous file (k)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 9.75 3.5-3.5 3.5 3.5"/></svg></button><span class="pos" id="sheet-pos"></span><button type="button" class="iconbtn" id="sheet-next" title="Next file (j)" aria-label="Next file (j)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6.25 3.5 3.5 3.5-3.5"/></svg></button><button type="button" class="iconbtn close" id="sheet-close" title="Close (Esc)" aria-label="Close (Esc)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 4.5 7 7m0-7-7 7"/></svg></button></div></div><div class="sheet-sub"><span id="sheet-stat"></span><span class="ver">v0001 → v0002</span></div></header><div class="sheet-body" id="sheet-body" tabindex="-1"></div></aside>
 <script>
@@ -596,7 +751,9 @@ svg.sprite { display: none; }
   var search = document.getElementById('filter');
   var vendorToggle = document.getElementById('vendor');
   var counter = document.getElementById('shown-count');
+  var list = document.querySelector('.files');
   var files = Array.prototype.slice.call(document.querySelectorAll('.files .file'));
+  var folders = Array.prototype.slice.call(document.querySelectorAll('.files .folder'));
   var scrim = document.getElementById('scrim');
   var host = document.getElementById('sheet-body');
   var titleBox = document.getElementById('sheet-title');
@@ -615,6 +772,23 @@ svg.sprite { display: none; }
 
   function empty(node) {
     while (node && node.firstChild) { node.removeChild(node.firstChild); }
+  }
+
+  // Folding a folder only hides its rows; they stay in the list, so j and k
+  // still walk every file and the counter still counts them.
+  function fold(folder, open) {
+    folder.classList.toggle('collapsed', !open);
+    var row = folder.querySelector('.frow');
+    if (row) { row.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+  }
+
+  // Open every folder a file sits in, so a file reached some other way than
+  // by clicking it — j and k, or a file named in the AI summary — is never
+  // the open one while its row is folded out of sight.
+  function reveal(file) {
+    for (var node = file.parentNode; node && node !== list; node = node.parentNode) {
+      if (node.classList && node.classList.contains('folder')) { fold(node, true); }
+    }
   }
 
   // The sheet header says the same things the row does, so it is built from a
@@ -648,6 +822,7 @@ svg.sprite { display: none; }
     var row = file && file.querySelector('.row');
     if (!row || !host) { return; }
     park();
+    reveal(file);
     openFile = file;
     file.classList.add('active');
     row.setAttribute('aria-expanded', 'true');
@@ -691,7 +866,6 @@ svg.sprite { display: none; }
     var showVendor = vendorToggle ? vendorToggle.checked : true;
     var shown = 0;
     var total = 0;
-    var first = true;
     files.forEach(function (el) {
       var path = (el.getAttribute('data-path') || '').toLowerCase();
       var isVendor = el.getAttribute('data-vendor') === '1';
@@ -700,9 +874,22 @@ svg.sprite { display: none; }
       // count are sums of `data-files` rather than counts of rows.
       var covers = parseInt(el.getAttribute('data-files') || '1', 10);
       el.classList.toggle('hidden', !ok);
-      el.classList.toggle('first-shown', ok && first);
       total += covers;
-      if (ok) { shown += covers; first = false; }
+      if (ok) { shown += covers; }
+    });
+    // A folder stays on the list while anything in it does. One the reader
+    // folded is opened again while they are searching, since a match they
+    // cannot see reads as no match at all.
+    folders.forEach(function (folder) {
+      var any = !!folder.querySelector('.file:not(.hidden)');
+      folder.classList.toggle('hidden', !any);
+      if (any && term) { fold(folder, true); }
+    });
+    var first = true;
+    Array.prototype.slice.call(list ? list.children : []).forEach(function (el) {
+      var ok = !el.classList.contains('hidden');
+      el.classList.toggle('first-shown', ok && first);
+      if (ok) { first = false; }
     });
     if (counter) { counter.textContent = shown + ' of ' + total + ' files shown'; }
     // Leaving the sheet open on a file the filter just took off the list would
@@ -717,6 +904,14 @@ svg.sprite { display: none; }
       if (file === openFile) { close(); return; }
       opener = row;
       show(file, true);
+    });
+  });
+
+  folders.forEach(function (folder) {
+    var row = folder.querySelector('.frow');
+    if (!row) { return; }
+    row.addEventListener('click', function () {
+      fold(folder, folder.classList.contains('collapsed'));
     });
   });
 
@@ -758,6 +953,115 @@ svg.sprite { display: none; }
       grip.addEventListener('pointerup', drop);
       grip.addEventListener('pointercancel', drop);
     });
+  }
+
+  // ---- the AI summary --------------------------------------------------
+  // Everything below is found by class rather than by id: a page without an
+  // AI card has none of it, and nothing here may assume otherwise.
+
+  // A file named in the explanation opens that file's diff. The row may be
+  // hidden by the filter or the vendored switch, so both are cleared first —
+  // a button that did nothing because of a filter the reader forgot about
+  // would read as a broken link.
+  function blockFor(path) {
+    var exact = null, within = null;
+    files.forEach(function (el) {
+      if (el.getAttribute('data-key') === path) { exact = exact || el; }
+      var tokens = (el.getAttribute('data-path') || '').split(' ');
+      if (!within && tokens.indexOf(path) !== -1) { within = el; }
+    });
+    return exact || within;
+  }
+  Array.prototype.slice.call(document.querySelectorAll('button.ai-file')).forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var file = blockFor(btn.getAttribute('data-open'));
+      if (!file) { return; }
+      if (file.classList.contains('hidden')) {
+        if (search) { search.value = ''; }
+        if (vendorToggle) { vendorToggle.checked = true; }
+        apply();
+      }
+      reveal(file);
+      var row = file.querySelector('.row');
+      if (row && row.scrollIntoView) { row.scrollIntoView({block: 'center'}); }
+      opener = row;
+      show(file, true);
+    });
+  });
+
+  // Copy a command to the clipboard. A page opened from disk is a secure
+  // context in current browsers, but not in every one, so the old
+  // select-and-copy route is kept as the fallback.
+  function copied(btn) {
+    btn.classList.add('copied');
+    btn.textContent = 'Copied';
+    setTimeout(function () { btn.classList.remove('copied'); btn.textContent = 'Copy'; }, 1600);
+  }
+  function copyText(text, btn) {
+    function fallback() {
+      var area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      try { if (document.execCommand('copy')) { copied(btn); } } catch (e) { /* nothing to do */ }
+      document.body.removeChild(area);
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { copied(btn); }, fallback);
+    } else {
+      fallback();
+    }
+  }
+  Array.prototype.slice.call(document.querySelectorAll('button.copy')).forEach(function (btn) {
+    btn.addEventListener('click', function () { copyText(btn.getAttribute('data-copy') || '', btn); });
+  });
+
+  // The deploy checklist keeps its ticks across reloads, keyed by the pair of
+  // versions and by each item's own words: a refreshed explanation that
+  // reorders the list keeps the right boxes ticked, and one that rewrites an
+  // item starts that item afresh.
+  Array.prototype.slice.call(document.querySelectorAll('.ai-check')).forEach(function (list) {
+    var key = list.getAttribute('data-key') || 'lw-ai';
+    var tally = list.parentNode.querySelector('.ai-done');
+    var boxes = Array.prototype.slice.call(list.querySelectorAll('input[type=checkbox]'));
+    var saved = {};
+    try { saved = JSON.parse(window.localStorage.getItem(key) || '{}') || {}; } catch (e) { saved = {}; }
+    function count() {
+      var done = boxes.filter(function (b) { return b.checked; }).length;
+      if (tally) { tally.textContent = done + ' of ' + boxes.length + ' done'; }
+    }
+    boxes.forEach(function (box) {
+      var item = box.getAttribute('data-item') || '';
+      box.checked = !!saved[item];
+      box.addEventListener('change', function () {
+        saved[item] = box.checked;
+        try { window.localStorage.setItem(key, JSON.stringify(saved)); } catch (e) { /* private window */ }
+        count();
+      });
+    });
+    count();
+  });
+
+  // While an explanation is being written the page reloads itself every few
+  // seconds, so the answer appears on a page already open. Never while a
+  // diff is open in the sheet — that would snatch it from under the reader —
+  // and not for ever: past the limit the card says what to type instead.
+  var waiting = document.querySelector('[data-ai-started]');
+  if (waiting) {
+    var started = Date.parse(waiting.getAttribute('data-ai-started'));
+    var limit = parseInt(waiting.getAttribute('data-ai-limit') || '1200', 10) * 1000;
+    var overdue = function () { return isNaN(started) || Date.now() - started > limit; };
+    var tick = function () {
+      if (overdue()) { waiting.classList.add('ai-late'); return; }
+      if (!document.body.classList.contains('sheet-open')) { window.location.reload(); return; }
+      setTimeout(tick, 5000);
+    };
+    // A page opened long after the request began says so at once, rather
+    // than after one more pointless reload.
+    if (overdue()) { waiting.classList.add('ai-late'); } else { setTimeout(tick, 5000); }
   }
 
   apply();

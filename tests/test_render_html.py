@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+from html.parser import HTMLParser
 
 import pytest
 
-from lambda_watcher.diffing import icons, intraline
+from lambda_watcher.diffing import filetree, icons, intraline
+from lambda_watcher.diffing.compare import FileChange, MoveGroup
 from lambda_watcher.diffing.highlight import (
     FAMILY_BY_LANG,
     GRAMMARS,
@@ -453,7 +455,7 @@ def test_every_handle_the_script_reaches_for_is_on_the_page(cfg, db, ingestor: I
 
 def test_every_state_the_script_sets_is_drawn(cfg, db, ingestor: Ingestor, make_zip):
     """A class the stylesheet has no rule for is a state the reader cannot see."""
-    for css_class in ("hidden", "first-shown", "active", "sheet-open", "dragging"):
+    for css_class in ("hidden", "first-shown", "active", "sheet-open", "dragging", "collapsed"):
         assert f"classList.toggle('{css_class}'" in JS or f"classList.add('{css_class}'" in JS
         assert f".{css_class}" in CSS, f"the script sets .{css_class} and nothing draws it"
 
@@ -499,3 +501,166 @@ def test_a_report_with_nothing_to_list_offers_nothing_to_filter(cfg, db, ingesto
 
     assert '<div class="empty">' in page
     assert 'id="filter"' not in page and 'class="files"' not in page
+
+
+# ------------------------------------------------------------- the file tree
+# The list is drawn as the folders the files live in. What can go wrong is
+# quiet: a row filed under the wrong folder, a folder whose count disagrees
+# with the "N of M files shown" counter, a rename whose folder is cut through
+# the middle of a name. These build the shapes and read the answer back.
+def _change(path: str, kind: str = "modified", old_path: str | None = None,
+            added: int = 0, removed: int = 0) -> FileChange:
+    """A file change carrying only what the tree reads: where it is, and its line counts."""
+    return FileChange(kind, path, old_path=old_path, added_lines=added, removed_lines=removed)
+
+
+def _shape(folder: filetree.Folder) -> list:
+    """The tree as nested ``(name, files, [children])`` with rows by path, for comparing whole."""
+    rows = [r.path if isinstance(r, FileChange) else f"move:{r.new_dir}" for r in folder.sorted_rows()]
+    return [(sub.name, sub.files, _shape(sub)) for sub in folder.subfolders()] + rows
+
+
+def _folders_around(page: str) -> dict[str, list[str]]:
+    """Each file block's ``data-key``, mapped to the folders it is nested in, outermost first."""
+
+    class Walk(HTMLParser):
+        """Tracks the open elements and notes the folders around every file block."""
+
+        def __init__(self) -> None:
+            """Start outside every element."""
+            super().__init__()
+            self.stack: list[str | None] = []
+            self.found: dict[str, list[str]] = {}
+
+        def handle_starttag(self, tag, attrs) -> None:
+            """Push the element, remembering it if it is a folder; note a file block's folders."""
+            attrs = dict(attrs)
+            if tag == "article" and attrs.get("data-key"):
+                self.found[attrs["data-key"]] = [f for f in self.stack if f]
+            if tag not in VOID:
+                self.stack.append(attrs.get("data-folder"))
+
+        def handle_endtag(self, tag) -> None:
+            """Pop the element that closes."""
+            if tag not in VOID and self.stack:
+                self.stack.pop()
+
+    walker = Walk()
+    walker.feed(page)
+    return walker.found
+
+
+VOID = {"input", "br", "img", "meta", "link", "hr", "path", "use", "rect", "circle"}
+
+
+def test_files_hang_under_their_folders_folders_first() -> None:
+    tree = filetree.build([
+        _change("lambda_function.py"),
+        _change("src/app/handlers/orders.py"),
+        _change("src/app/util.py"),
+        _change("src/lib/x.py"),
+        _change("README.md"),
+    ])
+    assert _shape(tree) == [
+        ("src", 3, [
+            ("app", 2, [("handlers", 1, ["src/app/handlers/orders.py"]), "src/app/util.py"]),
+            ("lib", 1, ["src/lib/x.py"]),
+        ]),
+        "lambda_function.py", "README.md",
+    ]
+    # Reading order is what j and k walk, so it is the tree's order, not the diff's.
+    assert [r.path for r in tree.walk()] == [
+        "src/app/handlers/orders.py", "src/app/util.py", "src/lib/x.py",
+        "lambda_function.py", "README.md",
+    ]
+
+
+def test_a_chain_of_lone_folders_is_one_row() -> None:
+    """``deep/a/b`` holding one file is one folder to the reader, not three clicks."""
+    tree = filetree.build([_change("deep/a/b/only.py"), _change("deep/a/b/c/more.py"),
+                           _change("top.py")])
+    assert _shape(tree) == [("deep/a/b", 2, [("c", 1, ["deep/a/b/c/more.py"]), "deep/a/b/only.py"]),
+                            "top.py"]
+    (folder,) = tree.subfolders()
+    assert folder.path == "deep/a/b"
+
+
+def test_a_folder_adds_up_everything_inside_it() -> None:
+    tree = filetree.build([_change("src/a.py", added=3, removed=1),
+                           _change("src/deep/b.py", added=2), _change("c.py", added=9)])
+    (src,) = tree.subfolders()
+    assert (src.files, src.added, src.removed) == (2, 5, 1)
+
+
+def test_a_rename_sits_in_the_folder_both_sides_share() -> None:
+    """Inside one folder it stays there; across folders it goes up to what they share."""
+    same = _change("src/app/new_name.py", "renamed", old_path="src/app/old_name.py")
+    across = _change("src/services/db.py", "renamed", old_path="src/handlers/db.py")
+    out_of_root = _change("helpers/db.py", "renamed", old_path="db.py")
+    assert filetree.folder_of(same) == "src/app"
+    assert filetree.folder_of(across) == "src"
+    assert filetree.folder_of(out_of_root) == ""
+    # The folder is always whole segments, never a cut through a name.
+    assert filetree.rename_parts("site-packages/boto3-1.34.0.dist-info/METADATA",
+                                 "site-packages/boto3-1.35.20.dist-info/METADATA") == (
+        "site-packages", "boto3-1.", "34.0", "35.20", ".dist-info/METADATA")
+
+
+def test_a_move_counts_like_the_counter_and_adds_no_lines_twice() -> None:
+    """The move's lines belong to its edited members, which are rows of their own."""
+    edited = _change("pkg/new/b.py", "renamed", old_path="pkg/old/b.py", added=4)
+    plain = _change("pkg/new/a.py", "renamed", old_path="pkg/old/a.py")
+    plain.old = plain.new = edited.old = None
+    move = MoveGroup("pkg/old", "pkg/new", members=[plain, edited])
+    # `edited_members` compares hashes, which these bare changes do not carry;
+    # the tree only needs the counts the page's counter uses.
+    assert move.moved - move.edited == 2
+    tree = filetree.build([move, edited])
+    (pkg,) = tree.subfolders()
+    assert pkg.name == "pkg"
+    assert (pkg.files, pkg.added) == (3, 4)
+    assert _shape(tree) == [("pkg", 3, ["move:pkg/new", "pkg/new/b.py"])]
+
+
+def test_the_report_draws_the_tree(cfg, db, ingestor: Ingestor, make_zip):
+    """Folders become rows the reader can fold, and the files sit inside them."""
+    page = _report(cfg, db, ingestor, make_zip)
+
+    assert page.count('<div class="folder"') == 1
+    assert 'data-folder="site-packages/boto3"' in page
+    assert '<span class="p">site-packages/boto3</span>' in page
+    assert '<span class="chip tally">1 file</span>' in page
+    assert 'aria-expanded="true"' in page
+    # The vendored file is inside the folder, the root file is not, and the
+    # folder comes first.
+    assert _folders_around(page) == {
+        "site-packages/boto3/__init__.py": ["site-packages/boto3"],
+        "lambda_function.py": [],
+    }
+    assert page.index('data-folder="site-packages/boto3"') < page.index('data-key="lambda_function.py"')
+    assert '<div class="files">' in page
+
+
+def test_a_row_in_the_tree_keeps_its_whole_path_for_the_sheet(cfg, db, ingestor: Ingestor,
+                                                              make_zip):
+    """The folder part is hidden in the tree but still in the row the sheet copies its heading from."""
+    page = _report(cfg, db, ingestor, make_zip)
+
+    assert '<span class="p"><span class="dir">site-packages/boto3/</span>__init__.py</span>' in page
+    assert ".files .row .p > .dir { display: none; }" in CSS
+
+
+def test_a_list_with_no_folders_does_not_leave_room_for_one(cfg, db, ingestor: Ingestor, make_zip):
+    ingestor.ingest(make_zip("fn.zip", {"lambda_function.py": PY_V1}))
+    ingestor.ingest(make_zip("fn.zip", {"lambda_function.py": PY_V2}))
+    page = render_html(_diff(cfg, db, ingestor))
+
+    assert '<div class="files" data-flat>' in page
+    assert '<div class="folder"' not in page
+    assert ".files[data-flat] .row" in CSS
+
+
+def test_a_folded_folder_still_prints() -> None:
+    """Paper has no arrow to click, so a folder folded on screen comes out open."""
+    print_rules = CSS[CSS.index("@media print"):]
+    assert ".folder.collapsed > .kids { display: block; }" in print_rules

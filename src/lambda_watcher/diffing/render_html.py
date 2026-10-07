@@ -10,14 +10,15 @@ import html
 import os
 import re
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..ai.explanation import PENDING_STALE_SECONDS
-from ..utils import format_ts, human_size, read_text, rename_label, signed, slugify
-from . import icons, intraline
+from ..utils import format_ts, human_size, read_text, signed, slugify
+from . import filetree, icons, intraline
 
 if TYPE_CHECKING:
     from ..ai.explanation import Explanation
@@ -251,20 +252,56 @@ table.grid th.num { text-align: right; }
 /* ---- the file list --------------------------------------------------- */
 /* One panel of rows rather than a stack of cards, because the list is an index:
    the diff it points at opens beside it instead of pushing the rest of the
-   list down the page. A row is a button, since that is what it does. */
-.files { border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
-.file { border-top: 1px solid var(--rule); }
+   list down the page. A row is a button, since that is what it does.
+
+   The rows are a tree of the folders they live in, so the structure is drawn
+   rather than spelled out in every path. Where a row starts is arithmetic on
+   its depth: the margin, one step per level, and room for a folder's arrow,
+   which a file has none of but steps in past so its icon lines up under its
+   folder's name. */
+.files { --tree-x: 20px; --tree-step: 18px; --twist: 21px;
+  border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
+.file, .frow { border-top: 1px solid var(--rule); }
 /* Transparent rather than absent so every row is the same height, whichever
-   one the filter left at the top. */
-.file:first-child, .file.first-shown { border-top-color: transparent; }
+   one the filter left at the top. Only a top-level row can be first: a file
+   inside a folder always has its folder's row above it. */
+.files > .file:first-child, .files > .file.first-shown,
+.files > .folder:first-child > .frow, .files > .folder.first-shown > .frow {
+  border-top-color: transparent; }
 .row { display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 20px;
   font: inherit; color: var(--text); text-align: left; background: none; border: 0;
   cursor: pointer; transition: background .12s ease; }
+.files .row { padding-left: calc(var(--tree-x) + var(--depth, 0) * var(--tree-step) + var(--twist)); }
+.files .frow { padding-left: calc(var(--tree-x) + var(--depth, 0) * var(--tree-step)); }
+.files[data-flat] .row { padding-left: var(--tree-x); }
 .row:hover { background: var(--panel); }
 .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-/* One width for every kind, so the paths start in one column and the eye can
-   run straight down them. */
+/* One width for every kind, so the kinds stand in one column down the right
+   whatever depth the name beside them starts at. */
 .row .chip { min-width: 90px; }
+/* A row already sits under its folder, so the folder part of its path is left
+   out here. It is still in the markup: the sheet's heading is copied from the
+   row, and up there the whole path is what says which file is open. */
+.files .row .p > .dir { display: none; }
+/* A folder's row: the arrow that folds it, its name, and in the kind column
+   how many files it holds — a count, so drawn as text rather than a label. */
+.frow .p { font-weight: 600; }
+.frow::after { visibility: hidden; }
+.chip.tally { background: none; color: var(--faint); font-weight: 500; }
+.chip.tally::before { display: none; }
+.twist { position: relative; width: 12px; height: 16px; flex: 0 0 auto; }
+.twist::before { content: ""; position: absolute; left: 3px; top: 4px; width: 5px; height: 5px;
+  border: 1.6px solid var(--faint); border-top: 0; border-left: 0;
+  transform: rotate(45deg); transition: transform .15s ease; }
+.frow:hover .twist::before { border-color: var(--accent); }
+.folder.collapsed > .frow .twist::before { transform: translate(-1px, 2px) rotate(-45deg); }
+.folder.collapsed > .kids { display: none; }
+/* A guide down from each open folder's arrow to its last row, so a long folder
+   still shows which rows are in it once its own row has scrolled away. */
+.kids { position: relative; }
+.kids::before { content: ""; position: absolute; top: 0; bottom: 0; width: 1px; z-index: 1;
+  left: calc(var(--tree-x) + (var(--depth) - 1) * var(--tree-step) + 6px);
+  background: var(--border); pointer-events: none; }
 /* The chevron points where the diff will appear: to the side, not downwards.
    Drawn in CSS because a vendored diff runs to thousands of rows, and each one
    would otherwise carry its own copy of the glyph. */
@@ -447,9 +484,12 @@ body.dragging, body.dragging .sheet { transition: none; }
   header.top { padding-top: 24px; }
   h1 { font-size: 23px; }
   .stat { flex-basis: 50%; border-top: 1px solid var(--rule); }
+  .files { --tree-x: 16px; --tree-step: 12px; }
   .row { flex-wrap: wrap; padding: 10px 16px; row-gap: 6px; }
-  .row .path { flex-basis: calc(100% - 110px); }
-  .row .stat-line { margin-left: 102px; flex-wrap: wrap; white-space: normal; }
+  .row .path { flex-basis: 100%; }
+  .row .stat-line { margin-left: 25px; flex-wrap: wrap; white-space: normal; }
+  .frow .stat-line { margin-left: 46px; }
+  .row .chip { margin-left: auto; }
   .row::after { display: none; }
   .sec-head, .toolbar { padding-left: 16px; padding-right: 16px; }
   .card > table.grid { width: calc(100% - 32px); margin: 0 16px 6px; }
@@ -457,7 +497,8 @@ body.dragging, body.dragging .sheet { transition: none; }
   table.grid td.label { width: auto; white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) {
-  body, .sheet, .scrim, .row::after, .row, .switch .track, .switch .track::after { transition: none; }
+  body, .sheet, .scrim, .row::after, .row, .switch .track, .switch .track::after,
+  .twist::before { transition: none; }
 }
 /* On paper there is no clicking, so every diff is printed under its own row and
    the chrome that only answers a pointer is left out. */
@@ -469,6 +510,7 @@ body.dragging, body.dragging .sheet { transition: none; }
     border-left: 0; box-shadow: none; }
   body.sheet-open { padding-right: 0; overflow: visible; }
   .file .body[hidden] { display: block; }
+  .folder.collapsed > .kids { display: block; }
 }
 .hidden { display: none !important; }
 
@@ -588,7 +630,9 @@ JS = """
   var search = document.getElementById('filter');
   var vendorToggle = document.getElementById('vendor');
   var counter = document.getElementById('shown-count');
+  var list = document.querySelector('.files');
   var files = Array.prototype.slice.call(document.querySelectorAll('.files .file'));
+  var folders = Array.prototype.slice.call(document.querySelectorAll('.files .folder'));
   var scrim = document.getElementById('scrim');
   var host = document.getElementById('sheet-body');
   var titleBox = document.getElementById('sheet-title');
@@ -607,6 +651,23 @@ JS = """
 
   function empty(node) {
     while (node && node.firstChild) { node.removeChild(node.firstChild); }
+  }
+
+  // Folding a folder only hides its rows; they stay in the list, so j and k
+  // still walk every file and the counter still counts them.
+  function fold(folder, open) {
+    folder.classList.toggle('collapsed', !open);
+    var row = folder.querySelector('.frow');
+    if (row) { row.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+  }
+
+  // Open every folder a file sits in, so a file reached some other way than
+  // by clicking it — j and k, or a file named in the AI summary — is never
+  // the open one while its row is folded out of sight.
+  function reveal(file) {
+    for (var node = file.parentNode; node && node !== list; node = node.parentNode) {
+      if (node.classList && node.classList.contains('folder')) { fold(node, true); }
+    }
   }
 
   // The sheet header says the same things the row does, so it is built from a
@@ -640,6 +701,7 @@ JS = """
     var row = file && file.querySelector('.row');
     if (!row || !host) { return; }
     park();
+    reveal(file);
     openFile = file;
     file.classList.add('active');
     row.setAttribute('aria-expanded', 'true');
@@ -683,7 +745,6 @@ JS = """
     var showVendor = vendorToggle ? vendorToggle.checked : true;
     var shown = 0;
     var total = 0;
-    var first = true;
     files.forEach(function (el) {
       var path = (el.getAttribute('data-path') || '').toLowerCase();
       var isVendor = el.getAttribute('data-vendor') === '1';
@@ -692,9 +753,22 @@ JS = """
       // count are sums of `data-files` rather than counts of rows.
       var covers = parseInt(el.getAttribute('data-files') || '1', 10);
       el.classList.toggle('hidden', !ok);
-      el.classList.toggle('first-shown', ok && first);
       total += covers;
-      if (ok) { shown += covers; first = false; }
+      if (ok) { shown += covers; }
+    });
+    // A folder stays on the list while anything in it does. One the reader
+    // folded is opened again while they are searching, since a match they
+    // cannot see reads as no match at all.
+    folders.forEach(function (folder) {
+      var any = !!folder.querySelector('.file:not(.hidden)');
+      folder.classList.toggle('hidden', !any);
+      if (any && term) { fold(folder, true); }
+    });
+    var first = true;
+    Array.prototype.slice.call(list ? list.children : []).forEach(function (el) {
+      var ok = !el.classList.contains('hidden');
+      el.classList.toggle('first-shown', ok && first);
+      if (ok) { first = false; }
     });
     if (counter) { counter.textContent = shown + ' of ' + total + ' files shown'; }
     // Leaving the sheet open on a file the filter just took off the list would
@@ -709,6 +783,14 @@ JS = """
       if (file === openFile) { close(); return; }
       opener = row;
       show(file, true);
+    });
+  });
+
+  folders.forEach(function (folder) {
+    var row = folder.querySelector('.frow');
+    if (!row) { return; }
+    row.addEventListener('click', function () {
+      fold(folder, folder.classList.contains('collapsed'));
     });
   });
 
@@ -778,6 +860,7 @@ JS = """
         if (vendorToggle) { vendorToggle.checked = true; }
         apply();
       }
+      reveal(file);
       var row = file.querySelector('.row');
       if (row && row.scrollIntoView) { row.scrollIntoView({block: 'center'}); }
       opener = row;
@@ -997,6 +1080,25 @@ def _split_path(path: str) -> str:
     return f'<span class="dir">{_esc(folder)}/</span>{_esc(name)}'
 
 
+def _rename_title(old: str, new: str) -> str:
+    """A rename written once, with only the part that moved written twice.
+
+    ``boto3-{1.34.0 → 1.35.20}.dist-info/METADATA`` rather than two
+    near-identical 90-character paths the reader has to compare by eye. The
+    folder both sides share is set apart in a ``dir`` span exactly as
+    :func:`_split_path` sets a directory apart, so the file tree can drop it —
+    the row already sits under that folder — while the sheet's heading, copied
+    from the same row, still shows the whole path. :func:`~.filetree.rename_parts`
+    decides where that folder ends, and is what files the row under it.
+    """
+    folder, rest, was, now, tail = filetree.rename_parts(old, new)
+    lead = f'<span class="dir">{_esc(folder)}/</span>' if folder else ""
+    return (
+        f'{lead}{_esc(rest)}<span class="ren"><span class="was">{_esc(was)}</span>'
+        f' → {_esc(now)}</span>{_esc(tail)}'
+    )
+
+
 #: How many squares the diffstat bar draws, split between added and removed.
 BAR_CELLS = 5
 
@@ -1042,8 +1144,10 @@ def _file_block(
 ) -> str:
     """One row of the file list, carrying the diff the sheet opens when it is clicked.
 
-    The row is what the reader scans — kind, icon, path, counts — and ``body``
-    is what opens beside it. The body ships inside the row's own element rather
+    The row is what the reader scans — icon, name, counts, kind — and ``body``
+    is what opens beside it. The kind sits at the far end rather than in front
+    of the name, so the names can step in under their folders and the kinds
+    still line up in one column down the right. The body ships inside the row's own element rather
     than in a second list keyed by path, so a block stays one self-contained
     thing to filter, hide or print; the script moves that element into the sheet
     and back out again, which is why no diff is ever on the page twice.
@@ -1064,9 +1168,9 @@ def _file_block(
         f'<article class="file" data-path="{_esc(path_key)}" '
         f'data-vendor="{1 if is_vendor else 0}"{extra}>'
         '<button class="row" type="button" aria-expanded="false" aria-controls="sheet">'
-        f'<span class="chip {_esc(chip_class)}">{_esc(chip_text)}</span>'
         f'<span class="path">{icon}<span class="p">{title}</span>{note_html}</span>'
         f'<span class="stat-line">{stat}</span>'
+        f'<span class="chip {_esc(chip_class)}">{_esc(chip_text)}</span>'
         "</button>"
         f'<div class="body" hidden>{body}</div>'
         "</article>"
@@ -1077,9 +1181,8 @@ def _render_file(change: FileChange, a_root: Path | None = None, b_root: Path | 
                  ai_note: str = "") -> str:
     """Render one file's change as a list row and the diff table behind it.
 
-    A rename is titled as one file with only the moved part written twice
-    (``boto3-{1.34.0 → 1.35.20}.dist-info/METADATA``), rather than as two
-    near-identical 90-character paths the reader has to compare by eye.
+    A rename is titled as one file with only the moved part written twice —
+    see :func:`_rename_title`.
 
     The version directories are passed through so the syntax highlighter can
     read the whole file: colouring a hunk correctly means knowing what was
@@ -1088,16 +1191,9 @@ def _render_file(change: FileChange, a_root: Path | None = None, b_root: Path | 
     line about this file, when there is one.
     """
     lang = language_of(change.path, change.lang)
-    # A rename is one file, not two. Written out in full twice, the two paths
-    # are near-identical and the reader has to diff 90 characters by eye to
-    # find the part that moved; so only that part is written twice.
     title = _split_path(change.path)
     if change.kind == "renamed" and change.old_path:
-        head, was, now, tail = rename_label(change.old_path, change.path)
-        title = (
-            f'{_esc(head)}<span class="ren"><span class="was">{_esc(was)}</span>'
-            f' → {_esc(now)}</span>{_esc(tail)}'
-        )
+        title = _rename_title(change.old_path, change.path)
     stat = ""
     if change.added_lines:
         stat += f'<span class="add">+{change.added_lines}</span>'
@@ -1234,11 +1330,7 @@ def _render_move(group: MoveGroup) -> str:
     members, so the "N of M files shown" counter stays a count of files: those
     members follow as blocks of their own and would otherwise be counted twice.
     """
-    head, was, now, tail = rename_label(*group.display_dirs)
-    title = (
-        f'{_esc(head)}<span class="ren"><span class="was">{_esc(was)}</span>'
-        f' → {_esc(now)}</span>{_esc(tail)}/'
-    )
+    title = _rename_title(*group.display_dirs) + "/"
     count = (
         f"{group.moved} files moved" if group.is_whole_dir
         else f"{group.moved} of {group.total_in_old_dir} files moved"
@@ -1274,6 +1366,59 @@ def _render_move(group: MoveGroup) -> str:
         is_vendor=group.is_vendor,
         files=group.moved - group.edited,
     )
+
+
+def _folder_block(folder: filetree.Folder, depth: int, inside: str) -> str:
+    """One folder of the file tree: a row that folds it, and everything in it underneath.
+
+    The row carries what the folder adds up to — its changed lines and how
+    many files — so a folded one still says how much it is hiding, and a
+    folder of 300 vendored files can be put away without losing count of them.
+    The tally sits where a file row has its kind, so the right-hand column
+    reads down the whole list.
+
+    ``depth`` reaches the stylesheet as ``--depth``, which is what steps each
+    row in. It is set once here rather than on every row: the files inside
+    inherit their folder's ``.kids`` value, which is why a row needs no inline
+    style however many of them there are. Folding is the script's job (see
+    :data:`JS`); without one every folder stays open, which is a complete page.
+    """
+    stat = ""
+    if folder.added:
+        stat += f'<span class="add">+{folder.added}</span>'
+    if folder.removed:
+        stat += f'<span class="del">−{folder.removed}</span>'
+    stat += _bar(folder.added, folder.removed)
+    tally = f'{folder.files:,} file{"s" if folder.files != 1 else ""}'
+    return (
+        f'<div class="folder" data-folder="{_esc(folder.path)}" style="--depth:{depth}">'
+        f'<button class="row frow" type="button" aria-expanded="true" '
+        f'title="Fold or unfold {_esc(folder.path)}/">'
+        f'<span class="path"><span class="twist" aria-hidden="true"></span>{icons.folder_icon()}'
+        f'<span class="p">{_esc(folder.name)}</span></span>'
+        f'<span class="stat-line">{stat}</span>'
+        f'<span class="chip tally">{tally}</span>'
+        "</button>"
+        f'<div class="kids" style="--depth:{depth + 1}">{inside}</div>'
+        "</div>"
+    )
+
+
+def _render_tree(folder: filetree.Folder, render_row: Callable[[filetree.Row], str],
+                 depth: int = 0) -> str:
+    """The file list as the folders the files live in: folders first, then the files, by name.
+
+    ``render_row`` turns one row of the tree into its block — :func:`_render_file`
+    or :func:`_render_move` with the page's arguments already bound. The root
+    has no row of its own, so the files at the top of the archive sit at the
+    top of the list rather than under a folder called nothing.
+    """
+    parts = [
+        _folder_block(sub, depth, _render_tree(sub, render_row, depth + 1))
+        for sub in folder.subfolders()
+    ]
+    parts.extend(render_row(row) for row in folder.sorted_rows())
+    return "\n".join(parts)
 
 
 def _stats(diff: VersionDiff) -> str:
@@ -1678,6 +1823,7 @@ NOSCRIPT = """
 .toolbar, .sheet, .scrim { display: none; }
 .row { cursor: default; }
 .row::after { display: none; }
+.twist { visibility: hidden; }
 .file .body[hidden] { display: block; }
 .copy { display: none; }
 """
@@ -1824,17 +1970,21 @@ def render_html(
     notes = ai.explanation.file_notes if ai is not None and ai.explanation is not None else {}
     ai_top, ai_offer = _ai_cards(ai, diff)
 
-    blocks: list[str] = []
+    rows: list[filetree.Row] = []
     for row in diff.file_rows():
-        if not isinstance(row, MoveGroup):
-            blocks.append(_render_file(row, diff.a_root, diff.b_root, notes.get(row.path, "")))
-            continue
-        # The group block reports the move; it has no room for a diff, so the
-        # members that were rewritten on the way keep their own blocks after it.
-        blocks.append(_render_move(row))
-        blocks.extend(
-            _render_file(c, diff.a_root, diff.b_root, notes.get(c.path, "")) for c in row.edited_members
-        )
+        rows.append(row)
+        if isinstance(row, MoveGroup):
+            # The group block reports the move; it has no room for a diff, so the
+            # members that were rewritten on the way keep their own blocks.
+            rows.extend(row.edited_members)
+
+    def render_row(row: filetree.Row) -> str:
+        """One block of the list, rendered against this page's two versions and notes."""
+        if isinstance(row, MoveGroup):
+            return _render_move(row)
+        return _render_file(row, diff.a_root, diff.b_root, notes.get(row.path, ""))
+
+    tree = filetree.build(rows)
     vendor_toggle = (
         '<label class="switch"><input type="checkbox" id="vendor" checked>'
         '<span class="track"></span>Show vendored files</label>'
@@ -1853,7 +2003,10 @@ def render_html(
             ' aria-label="Filter files by path"></label>'
             f'{vendor_toggle}<span class="sub" id="shown-count"></span></div>'
         )
-        listing = '<div class="files">{}</div>'.format("\n".join(blocks))
+        # A list with no folders in it has nothing to step in under, so it
+        # does not keep the room a folder's arrow would take.
+        flat = " data-flat" if not tree.folders else ""
+        listing = f'<div class="files"{flat}>{_render_tree(tree, render_row)}</div>'
         files = _section("File changes", toolbar + listing, count=sum(diff.counts().values()),
                          aside="click a file to open its diff")
     else:
