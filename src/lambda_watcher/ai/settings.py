@@ -41,6 +41,12 @@ SETTINGS_FILENAME = "ai.json"
 #: tolerant of anything older — see :meth:`AISettings.from_dict`.
 SETTINGS_SCHEMA = 1
 
+#: How an explanation is arrived at. ``prompt`` is one request carrying the
+#: diff (:func:`~.run.explain_diff`); ``agent`` lets an agent explore both
+#: versions first (:mod:`.agent`). The first is the default because it needs
+#: nothing installed and costs one request; the second has to be asked for.
+ENGINES = ("prompt", "agent")
+
 
 @dataclass(frozen=True)
 class ProviderInfo:
@@ -286,6 +292,12 @@ class AISettings:
         Whether the changed lines of first-party code are sent. Off, the model
         sees only the structure — files, dependencies, env vars, services,
         findings — which says less but keeps source code on the machine.
+    ``engine``
+        ``prompt`` asks in one request with the diff; ``agent`` lets an agent
+        read both versions and follow the change through the code before it
+        answers — slower, several requests, and it needs the ``agents`` extra
+        (see :func:`~.agent.agent_problem`). Where it cannot run, the watcher
+        falls back to ``prompt`` rather than leave a version unexplained.
 
     ``timeout_seconds`` and ``max_prompt_kb`` of 0 mean "the service's own
     default" (see :class:`ProviderInfo`); anything else overrides it for every
@@ -295,6 +307,7 @@ class AISettings:
     enabled: bool = True
     auto_explain: bool = True
     send_code: bool = True
+    engine: str = "prompt"
     default: str = ""
     timeout_seconds: int = 0
     max_retries: int = 4
@@ -345,6 +358,8 @@ class AISettings:
             value = data.get(name)
             ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
             values[name] = value if ok else getattr(defaults, name)
+        engine = data.get("engine")
+        values["engine"] = engine if engine in ENGINES else defaults.engine
         values["default"] = str(data.get("default") or "")
         models = [ModelEntry.from_dict(m) for m in data.get("models") or [] if isinstance(m, dict)]
         values["models"] = [m for m in models if m is not None]
@@ -357,6 +372,7 @@ class AISettings:
             "enabled": self.enabled,
             "auto_explain": self.auto_explain,
             "send_code": self.send_code,
+            "engine": self.engine,
             "default": self.default,
             "timeout_seconds": self.timeout_seconds,
             "max_retries": self.max_retries,

@@ -84,6 +84,14 @@ class Explanation:
     The provenance fields are what the report's footer is written from — "by
     claude-sonnet-5, from 14 of 16 changed files, 3 values redacted" — because
     an explanation is only as trustworthy as what it was shown.
+
+    ``engine`` says how it was arrived at (see :data:`~.settings.ENGINES`).
+    For an ``agent`` explanation the counts mean something slightly different,
+    because nothing was cut for length — every changed file was there to be
+    read: ``files_sent`` is how many of the changed files the agent actually
+    opened, ``files_read`` names every file it opened, changed or not, and
+    ``steps`` counts its tool calls. A record saved before agents existed has
+    none of these and reads as ``prompt``, which is what wrote it.
     """
 
     headline: str = ""
@@ -111,6 +119,9 @@ class Explanation:
     output_tokens: int | None = None
     seconds: float = 0.0
     attempts: int = 1
+    engine: str = "prompt"
+    steps: int = 0
+    files_read: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -142,7 +153,7 @@ class Explanation:
         scalars = {k: data[k] for k in (
             "headline", "summary", "risk", "risk_reason", "structured", "provider", "model",
             "model_name", "created_at", "prompt_version", "files_sent", "files_total", "redactions",
-            "send_code", "input_tokens", "output_tokens", "seconds", "attempts",
+            "send_code", "input_tokens", "output_tokens", "seconds", "attempts", "engine", "steps",
         ) if k in data and data[k] is not None}
         return cls(
             **scalars,
@@ -152,6 +163,7 @@ class Explanation:
             file_notes={str(k): str(v) for k, v in (data.get("file_notes") or {}).items()},
             omitted=[str(p) for p in data.get("omitted") or []],
             withheld=[str(p) for p in data.get("withheld") or []],
+            files_read=[str(p) for p in data.get("files_read") or []],
         )
 
 
@@ -196,10 +208,12 @@ def _match_path(cited: Any, known: set[str]) -> str | None:
     in backticks — or by filename alone. Each of those is resolved to the one
     path in the diff it can mean; a filename shared by two paths, or a path
     that was invented, resolves to nothing, because a link to the wrong file is
-    worse than no link.
+    worse than no link. An agent sees the two versions mounted at ``/old/`` and
+    ``/new/`` (:mod:`.workspace`) and is told to cite neither, but a path copied
+    straight out of a tool result keeps its prefix often enough to undo here.
     """
     text = str(cited or "").strip().strip("`'\"").strip()
-    for prefix in ("a/", "b/", "./"):
+    for prefix in ("/old/", "/new/", "a/", "b/", "./"):
         if text.startswith(prefix) and text not in known:
             text = text[len(prefix):]
     text = text.split(":")[0].strip()
