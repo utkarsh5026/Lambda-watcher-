@@ -44,7 +44,7 @@ if TYPE_CHECKING:                                  # the diffing package imports
 #: can tell an answer to the current question from an answer to an older one.
 PROMPT_VERSION = 1
 
-SYSTEM_PROMPT = """\
+_ONE_REQUEST_BRIEF = """\
 You explain changes to AWS Lambda deployment packages to the engineer who is about \
 to deploy them, or who is trying to understand what a colleague shipped.
 
@@ -69,6 +69,13 @@ omitted for length, a file withheld — say so rather than guessing.
 - Refer to files by the exact paths given in the input.
 - No filler, no praise, and no restating counts the reader can already see.
 
+"""
+
+#: The shape every answer comes back in, whichever way it was arrived at. The
+#: one-request prompt ends with it and so does the agent's (see
+#: :data:`~.agent.AGENT_SYSTEM_PROMPT`), because :func:`~.explanation.parse_answer`
+#: and both renderers only know how to read this one shape.
+ANSWER_FORMAT = """\
 Reply with one JSON object and nothing else, in exactly this shape:
 {
   "headline": "one sentence of at most 100 characters: the most important thing this version changes",
@@ -94,6 +101,9 @@ Reply with one JSON object and nothing else, in exactly this shape:
 Order changes by importance. Use empty lists when there is nothing to say, and \
 never invent risks to fill space. At most 8 changes, 6 risks and 8 checklist items.
 """
+
+#: The instructions a one-request explanation is sent with.
+SYSTEM_PROMPT = _ONE_REQUEST_BRIEF + ANSWER_FORMAT
 
 #: Files whose contents are never sent, only their names: the places a
 #: credential lives on purpose rather than by accident.
@@ -276,8 +286,16 @@ def _file_body(change: FileChange, limit: int) -> tuple[str, int]:
     return body, redactions
 
 
-def _overview(diff: VersionDiff) -> list[str]:
-    """The opening facts: which function, which two versions, and what the package is now."""
+def _overview(diff: VersionDiff, heading: str | None = None) -> list[str]:
+    """The opening facts: which function, which two versions, and what the package is now.
+
+    ``heading`` replaces the first line, which otherwise calls the package a
+    Lambda function. The agent's brief (:func:`~.workspace.agent_brief`) passes
+    one of its own, because what it is handed may as easily be a repository's
+    source archive; every line after the heading already says only what the
+    archive holds — the runtime and handler lines appear only when a handler
+    was found.
+    """
     a, b = diff.a_meta, diff.b_meta
     # Counted here rather than taken from `diff.counts()`, which includes any
     # vendored files the report was built to show: the model is told about
@@ -287,7 +305,7 @@ def _overview(diff: VersionDiff) -> list[str]:
         if not change.is_vendor:
             counts[change.kind] = counts.get(change.kind, 0) + 1
     lines = [
-        f"# Lambda function {diff.function_name!r}: version {diff.a_seq} → version {diff.b_seq}",
+        heading or f"# Lambda function {diff.function_name!r}: version {diff.a_seq} → version {diff.b_seq}",
         "",
         f"- Older: v{diff.a_seq:04d}, archived {format_ts(a.get('ingested_at'))}"
         + (f", downloaded as {a['source_name']}" if a.get("source_name") else "")

@@ -293,6 +293,12 @@ COMMANDS: dict[str, CommandHelp] = {
             Rate limits, timeouts and dropped connections are retried
             automatically. If it still fails, the report says why and the same
             command tries again.
+
+            --agent lets an agent investigate before it answers: it reads both
+            versions, follows the change to the code that calls it, and checks
+            what a new setting does when it is missing. It is slower and makes
+            several requests, and needs the agents extra (Python 3.11 or newer).
+            `lw ai settings --agent` makes it the default for every change.
         """,
         examples=(
             ("Explain the newest change", "lw explain order-processor"),
@@ -302,6 +308,9 @@ COMMANDS: dict[str, CommandHelp] = {
             ("Fill in every step of the history", "lw explain order-processor --all"),
             ("See exactly what would be sent, and send nothing", "lw explain order-processor --dry-run"),
             ("Open the report with the explanation in it", "lw explain order-processor --open"),
+            ("Let an agent investigate before it answers", "lw explain order-processor --agent"),
+            ("See every file the agent could read, and send nothing",
+             "lw explain order-processor --agent --dry-run"),
         ),
     ),
     "ai": CommandHelp(
@@ -756,6 +765,10 @@ SUBCOMMANDS: dict[str, CommandHelp] = {
             --retries, --timeout and --max-prompt-kb tune how hard a request tries
             and how much of a large change it includes; 0 means the service's own
             default.
+
+            --agent has every change investigated by an agent before it is
+            explained, rather than explained from the diff in one request. It
+            needs the agents extra; until that is installed, one request is used.
         """,
         examples=(
             ("See every setting", "lw ai settings"),
@@ -763,6 +776,7 @@ SUBCOMMANDS: dict[str, CommandHelp] = {
             ("Never send code, only the shape of a change", "lw ai settings --no-send-code"),
             ("Try harder on a busy service", "lw ai settings --retries 8"),
             ("Wait longer for a slow local model", "lw ai settings --timeout 900"),
+            ("Let an agent investigate every change", "lw ai settings --agent"),
         ),
     ),
 }

@@ -1,8 +1,10 @@
 """Explaining a comparison, start to finish — on demand, or in the background as versions arrive.
 
 :func:`explain_diff` is the whole request: build the prompt, ask the model,
-read the answer. :func:`rewrite_pages` puts the result where people look for
-it. :class:`Explainer` runs both on a thread of its own for the watcher, so a
+read the answer — or, when the agent is asked for, hand the comparison to
+:func:`~.agent.investigate_diff` and read its answer instead.
+:func:`rewrite_pages` puts the result where people look for it.
+:class:`Explainer` runs both on a thread of its own for the watcher, so a
 download is archived, reported and notified about in the usual second or two,
 and the explanation joins the report when it is ready rather than holding up
 every download queued behind it.
@@ -41,10 +43,47 @@ def explain_diff(
     entry: ModelEntry,
     settings: AISettings,
     *,
+    engine: str | None = None,
+    on_retry: Callable[[int, float, AIError], None] | None = None,
+    on_step: Callable[[int, str], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Explanation:
+    """Explain ``diff`` with ``entry``, in one request or by an agent's investigation.
+
+    ``engine`` is ``prompt`` or ``agent`` when the caller chose (``lw explain
+    --agent``), and ``None`` to follow the ``engine`` setting. The difference
+    matters only when the agent cannot run — its libraries are not installed,
+    or sending code is switched off. Chosen explicitly, that is an
+    :class:`AIError` naming the fix, because the person asked for the agent and
+    should not silently get something else. Taken from the setting, it falls
+    back to one request with a line in the log, because a version the watcher
+    leaves unexplained over a missing package is worse than one explained the
+    simpler way.
+
+    ``on_step(number, what)`` follows an agent's progress, and is never called
+    for a one-request explanation; ``on_retry`` is the reverse. See
+    :func:`_explain_in_one_request` and :func:`~.agent.investigate_diff`.
+    """
+    if (engine or settings.engine) == "agent":
+        from .agent import agent_problem, investigate_diff
+
+        problem = agent_problem() or (None if settings.send_code else "sending code is switched off")
+        if problem is None or engine == "agent":
+            return investigate_diff(diff, entry, settings, on_step=on_step)
+        LOG.warning("explaining %s v%04d → v%04d in one request rather than with the agent: %s",
+                    diff.function_name, diff.a_seq, diff.b_seq, problem)
+    return _explain_in_one_request(diff, entry, settings, on_retry=on_retry, sleep=sleep)
+
+
+def _explain_in_one_request(
+    diff: VersionDiff,
+    entry: ModelEntry,
+    settings: AISettings,
+    *,
     on_retry: Callable[[int, float, AIError], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Explanation:
-    """Ask ``entry`` to explain ``diff``, and return what it said with where it came from.
+    """Ask ``entry`` to explain ``diff`` in one request, and return what it said with where it came from.
 
     A "too large" refusal is handled here rather than surfaced: the prompt is
     rebuilt at half the size and sent again, down to :data:`MIN_PROMPT_CHARS`,
@@ -229,6 +268,16 @@ class Explainer:
         if self._stop.wait(seconds):
             raise _Stopping()
 
+    def _check_stop(self, _step: int, _what: str) -> None:
+        """Between an agent's steps, end its run if the explainer is stopping.
+
+        An agent can take minutes; this is the agent's counterpart of
+        :meth:`_wait`, so ``lw watch`` exits after the step in flight rather
+        than after the whole investigation.
+        """
+        if self._stop.is_set():
+            raise _Stopping()
+
     def _loop(self) -> None:
         """Take jobs until told to stop. One bad job is logged; it never ends the thread."""
         while not self._stop.is_set():
@@ -273,7 +322,7 @@ class Explainer:
         explanation: Explanation | None = None
         failure: AIError | None = None
         try:
-            explanation = explain_diff(diff, entry, settings, sleep=self._wait)
+            explanation = explain_diff(diff, entry, settings, sleep=self._wait, on_step=self._check_stop)
             save_done(self.store, diff.a_meta, diff.b_meta, explanation)
             LOG.info("explained %s v%04d → v%04d with %s", diff.function_name, diff.a_seq,
                      diff.b_seq, entry.label)

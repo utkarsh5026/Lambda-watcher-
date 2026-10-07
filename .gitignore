@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code: per-person overrides; .claude/settings.json and skills/ are shared
+.claude/settings.local.json

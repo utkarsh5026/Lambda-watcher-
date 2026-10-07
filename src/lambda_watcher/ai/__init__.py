@@ -20,6 +20,15 @@ The modules, in the order a request flows through them:
 * :mod:`.run` — the pieces above as one call, plus the background worker the
   watcher hands new versions to
 
+And the optional second way of arriving at the same answer, for ``lw explain
+--agent``:
+
+* :mod:`.workspace` — both versions as files an agent may open, under the
+  same rules as a prompt: vendored files out, credentials redacted
+* :mod:`.agent` — a ``deepagents`` agent that investigates the change with
+  those files before answering; needs the ``agents`` extra, and is the only
+  module here that imports anything outside the standard library
+
 Deliberately empty of imports: :mod:`lambda_watcher.diffing.build` reads saved
 explanations while the diffing package is still initialising, and an eager
 import of :mod:`.prompt` from here would import the diffing package back.

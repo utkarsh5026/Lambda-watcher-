@@ -24,12 +24,14 @@ from rich.table import Table
 
 from . import __version__
 from . import heartbeat
+from .ai.agent import AGENT_SYSTEM_PROMPT, INSTALL_COMMAND, INSTALL_HINT, MAX_TOOL_CALLS, agent_problem
 from .ai.explanation import Explanation, clear_pending, load_record, save_done, save_failed, save_pending
 from .ai.prompt import SYSTEM_PROMPT, build_prompt
 from .ai.providers import AIError, list_models, normalize_local_url, parse_azure_endpoint, ping
 from .ai.report import explain_command, headline_for, panel_for, shell_word
 from .ai.run import Explainer, ExplainJob, explain_diff, rewrite_pages
 from .ai.settings import PROVIDERS, AISettings, ModelEntry, SettingsError, provider_key
+from .ai.workspace import NEW, OLD, agent_brief, build_workspace
 from .helptext import FUNCTION_HELP, LATEST_VERSION_HELP, VERSION_HELP, for_command, for_group
 from .config import (
     Config, default_config_path, default_download_dirs, load_config, on_wsl, unknown_keys,
@@ -1167,7 +1169,13 @@ def _ai_doctor_row(cfg: Config) -> tuple[str, str, str, str]:
         return ("ai", "NO KEY", f"{entry.name} has no API key here",
                 f"lw ai add {entry.provider} --name {entry.name}")
     how = "every new version" if settings.auto_explain else "on request"
-    return ("ai", "ok", f"{entry.label}, {how}", "lw ai test checks it answers")
+    if settings.engine == "agent" and agent_problem():
+        # Explanations are still written, in one request, so this is advice
+        # rather than a fault: lower case, and the checkup still passes.
+        return ("ai", "one request", f"{entry.label}; {agent_problem()}",
+                escape(INSTALL_COMMAND))
+    return ("ai", "ok", f"{entry.label}, {how}" + (", by an agent" if settings.engine == "agent" else ""),
+            "lw ai test checks it answers")
 
 
 # ------------------------------------------------------------------ watch
@@ -1881,16 +1889,30 @@ def _usable_model(
     return entry
 
 
-def _explain_pair(cfg: Config, db: Database, store: Store, function_id: int, pair,
-                  settings: AISettings, entry: ModelEntry) -> Explanation | AIError:
+def _uses_agent(settings: AISettings, engine: str | None) -> bool:
+    """Whether an explanation asked for this way will really be written by the agent.
+
+    Mirrors the fall-back in :func:`~lambda_watcher.ai.run.explain_diff`, so
+    the status line says "an agent is investigating" only when one is.
+    """
+    if engine == "agent":
+        return True
+    return engine is None and settings.engine == "agent" and settings.send_code and agent_problem() is None
+
+
+def _explain_pair(cfg: Config, db: Database, store: Store, function_id: int, pair, settings: AISettings,
+                  entry: ModelEntry, engine: str | None = None) -> Explanation | AIError:
     """Explain one comparison from a terminal: pending, the request, then the saved result and pages.
 
     The pair is marked pending first and its page rewritten, so a report
     already open in a browser shows the explanation arriving. Retries print as
     they happen — "rate limited — retrying in 8s (2 of 5)" — so a wait never
-    looks like a hang. Every outcome is saved and drawn: an answer replaces
-    the card, and a failure leaves the page saying what went wrong and how to
-    try again. Ctrl-C takes the pending mark back off before it exits.
+    looks like a hang; an agent's steps replace the status line as they
+    happen — "step 6: reading the diff of app.py" — for the same reason. Every
+    outcome is saved and drawn: an answer replaces the card, and a failure
+    leaves the page saying what went wrong and how to try again. Ctrl-C takes
+    the pending mark back off before it exits. ``engine`` is passed through to
+    :func:`~lambda_watcher.ai.run.explain_diff`.
     """
     def quietly_rewrite() -> None:
         """Redraw the pair's pages, never letting a page failure hide the answer."""
@@ -1908,10 +1930,19 @@ def _explain_pair(cfg: Config, db: Database, store: Store, function_id: int, pai
         err_console.print(f"  [yellow]{escape(error.title)}[/yellow] [dim]— retrying in {wait:.0f}s "
                           f"(attempt {attempt + 1} of {attempts})[/dim]")
 
+    if _uses_agent(settings, engine):
+        doing = (f"{entry.label} is investigating what changed between "
+                 f"v{pair.a_seq:04d} and v{pair.b_seq:04d}")
+    else:
+        doing = f"asking {entry.label} what changed between v{pair.a_seq:04d} and v{pair.b_seq:04d}"
     try:
-        with err_console.status(f"asking {entry.label} what changed between "
-                                f"v{pair.a_seq:04d} and v{pair.b_seq:04d}…"):
-            explanation = explain_diff(pair, entry, settings, on_retry=on_retry)
+        with err_console.status(f"{doing}…") as status:
+            def on_step(step: int, what: str) -> None:
+                """Show the agent's latest step on the spinner line."""
+                status.update(f"{doing} · step {step}: {escape(what)}")
+
+            explanation = explain_diff(pair, entry, settings, engine=engine, on_retry=on_retry,
+                                       on_step=on_step)
     except AIError as error:
         save_failed(store, pair.a_meta, pair.b_meta, entry.label, error.as_dict())
         quietly_rewrite()
@@ -1940,7 +1971,10 @@ def _provenance_line(explanation: Explanation) -> str:
         parts.append(f"{explanation.seconds:.1f}s")
     if explanation.attempts > 1:
         parts.append(f"{explanation.attempts} attempts")
-    if not explanation.send_code:
+    if explanation.engine == "agent":
+        parts.append(f"an agent, {explanation.steps} steps, opened {explanation.files_sent} of "
+                     f"{explanation.files_total} changed files")
+    elif not explanation.send_code:
         parts.append("structure only, no code sent")
     elif explanation.files_total:
         parts.append(f"from {explanation.files_sent} of {explanation.files_total} changed files")
@@ -1967,6 +2001,44 @@ def _print_dry_run(pair, settings: AISettings, entry: ModelEntry | None) -> None
         f"# What `lw explain` would send to {target}.\n"
         f"# {' · '.join(notes)}. Nothing was sent.\n\n"
         f"----- instructions -----\n{SYSTEM_PROMPT}\n----- the change -----\n{built.text}\n"
+    )
+
+
+def _print_agent_dry_run(pair, settings: AISettings, entry: ModelEntry | None) -> None:
+    """Print what ``lw explain --agent`` would give the agent for this pair, and send nothing.
+
+    An agent chooses what to read, so unlike a one-request dry run this cannot
+    print what *will* be sent — only everything that *could* be: its
+    instructions, its task, and every file mounted for it, with what was left
+    out and why. That is the honest bound, and the one a person deciding
+    whether to switch the agent on needs. Works without the agent's libraries
+    installed, and says so when they are not.
+    """
+    workspace = build_workspace(pair, send_code=settings.send_code)
+    target = entry.label if entry else "your default model (none is set up yet; `lw ai add`)"
+    notes = [f"{workspace.count(NEW)} newer and {workspace.count(OLD)} older files it may read "
+             f"({human_size(workspace.mounted_chars)})",
+             f"{sum(workspace.redactions.values())} values redacted in them",
+             f"up to {MAX_TOOL_CALLS} tool calls"]
+    if workspace.withheld:
+        notes.append(f"{len(workspace.withheld)} withheld")
+    if workspace.skipped:
+        notes.append(f"{len(workspace.skipped)} not mounted")
+    header = (f"# What `lw explain --agent` would give an agent working with {target}.\n"
+              f"# {' · '.join(notes)}.\n"
+              "# It reads only what it decides to, from the files listed at the end. Nothing was sent.\n")
+    problem = agent_problem()
+    if problem:
+        header += f"# It cannot run here yet: {problem}. {INSTALL_HINT}.\n"
+    if not settings.send_code:
+        header += ("# Sending code is switched off, so the agent would refuse to run: it has nothing to "
+                   "read. `lw ai settings --send-code` allows it.\n")
+    listing = [f"{path}  ({human_size(len(text))})" for path, text in workspace.files.items()]
+    listing += [f"{path}  (not mounted: {why})" for path, why in workspace.skipped]
+    sys.stdout.write(
+        f"{header}\n----- instructions -----\n{AGENT_SYSTEM_PROMPT}\n"
+        f"----- the task -----\n{agent_brief(workspace)}\n"
+        "----- files it can read -----\n" + ("\n".join(listing) or "(none)") + "\n"
     )
 
 
@@ -1998,6 +2070,11 @@ def explain(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="With --all: do not ask before making several requests."
     ),
+    agent: Optional[bool] = typer.Option(
+        None, "--agent/--no-agent",
+        help="Let an agent read both versions and follow the change through the code before it answers "
+             "(slower, several requests), or ask in one request. Default: lw ai settings.",
+    ),
 ) -> None:
     """Explain a change in plain English, print it, and add it to the report.
 
@@ -2005,6 +2082,8 @@ def explain(
     so asking again is instant and free; ``--refresh`` or a different
     ``--model`` asks again. Everything that can go wrong on the way is sorted
     into a message and a next step by :mod:`lambda_watcher.ai.providers`.
+    ``--agent`` hands the comparison to :mod:`lambda_watcher.ai.agent` instead
+    of one request; a saved answer written the other way is asked again.
     """
     cfg = _cfg()
     db = _open_db(cfg)
@@ -2013,16 +2092,20 @@ def explain(
     function_id = int(row["id"])
     settings = _ai_settings(cfg)
     include_vendor = True if cfg.report.include_vendor else None
+    engine = None if agent is None else ("agent" if agent else "prompt")
 
     if every:
         _explain_history(cfg, db, store, row, settings, model, refresh=refresh, limit=limit,
-                         yes=yes, json_out=json_out, dry_run=dry_run)
+                         yes=yes, json_out=json_out, dry_run=dry_run, engine=engine)
         return
 
     a_seq, b_seq = _resolve_pair(db, function_id, from_, to)
     pair = _build_diff(db, store, cfg, row, a_seq, b_seq, include_vendor)
     if dry_run:
-        _print_dry_run(pair, settings, settings.resolve(model))
+        if (engine or settings.engine) == "agent":
+            _print_agent_dry_run(pair, settings, settings.resolve(model))
+        else:
+            _print_dry_run(pair, settings, settings.resolve(model))
         return
 
     if not settings.enabled:
@@ -2033,13 +2116,14 @@ def explain(
     # naming a model other than the one that wrote it.
     chosen = settings.resolve(model) if model is not None else None
     other_model = chosen is not None and saved is not None and chosen.name != saved.model_name
-    if saved is not None and not refresh and not other_model:
+    other_engine = engine is not None and saved is not None and saved.engine != engine
+    if saved is not None and not refresh and not other_model and not other_engine:
         explanation: Explanation | AIError = saved
         rewrite_pages(cfg, db, store, function_id, pair, settings)
         fresh = False
     else:
         entry = _usable_model(cfg, settings, model, interactive=not json_out)
-        explanation = _explain_pair(cfg, db, store, function_id, pair, settings, entry)
+        explanation = _explain_pair(cfg, db, store, function_id, pair, settings, entry, engine)
         fresh = True
 
     command = explain_command(row["name"], a_seq, b_seq)
@@ -2069,7 +2153,7 @@ def explain(
 
 def _explain_history(cfg: Config, db: Database, store: Store, row, settings: AISettings,
                      model: str | None, *, refresh: bool, limit: int, yes: bool, json_out: bool,
-                     dry_run: bool) -> None:
+                     dry_run: bool, engine: str | None = None) -> None:
     """``lw explain FN --all``: explain every step of a function's history that has no answer yet.
 
     Oldest first, so the history fills in the order it happened. Asks before
@@ -2085,7 +2169,8 @@ def _explain_history(cfg: Config, db: Database, store: Store, row, settings: AIS
     todo = []
     for older, newer in reversed(pairs):
         record = load_record(store, dict(older), dict(newer))
-        if refresh or record is None or record.explanation is None:
+        if (refresh or record is None or record.explanation is None
+                or (engine is not None and record.explanation.engine != engine)):
             todo.append((int(older["seq"]), int(newer["seq"])))
     if not pairs:
         _fail(f"{row['name']} has only one version, so there is no change to explain yet.")
@@ -2112,7 +2197,7 @@ def _explain_history(cfg: Config, db: Database, store: Store, row, settings: AIS
     failed = 0
     for a_seq, b_seq in todo:
         pair = _build_diff(db, store, cfg, row, a_seq, b_seq, include_vendor)
-        outcome = _explain_pair(cfg, db, store, function_id, pair, settings, entry)
+        outcome = _explain_pair(cfg, db, store, function_id, pair, settings, entry, engine)
         label = f"v{a_seq:04d} → v{b_seq:04d}"
         if isinstance(outcome, AIError):
             failed += 1
@@ -2221,6 +2306,14 @@ def _print_ai_status(cfg: Config) -> None:
         sends = ("the changed lines of your own code, with credentials redacted"
                  if settings.send_code else "only the shape of each change — no code")
         console.print(f"  [dim]sends      {sends}[/dim]")
+        if settings.engine == "agent":
+            problem = agent_problem()
+            how = ("an agent that reads both versions before it answers" if not problem
+                   else f"one request for now — {problem}")
+            console.print(f"  [dim]explains   with {escape(how)}[/dim]")
+        else:
+            console.print("  [dim]explains   in one request · `lw ai settings --agent` lets an agent "
+                          "investigate first[/dim]")
         console.print(f"  [dim]retries    up to {settings.max_retries} times on rate limits, "
                       "outages, timeouts and dropped connections[/dim]")
         if settings.path is not None:
@@ -2677,12 +2770,17 @@ def ai_settings(
     max_prompt_kb: Optional[int] = typer.Option(
         None, "--max-prompt-kb", min=0, help="Most of a change to send, in KB. 0 means the service's default."
     ),
+    agent: Optional[bool] = typer.Option(
+        None, "--agent/--no-agent",
+        help="Let an agent investigate each change before explaining it, or ask in one request.",
+    ),
 ) -> None:
     """Show the switches, and change the ones given. Every row says how to flip it."""
     cfg = _cfg()
     settings = _ai_settings(cfg)
     changes = {"auto_explain": auto, "send_code": send_code, "max_retries": retries,
-               "timeout_seconds": timeout, "max_prompt_kb": max_prompt_kb}
+               "timeout_seconds": timeout, "max_prompt_kb": max_prompt_kb,
+               "engine": None if agent is None else ("agent" if agent else "prompt")}
     changed = {k: v for k, v in changes.items() if v is not None}
     if changed:
         for attribute, value in changed.items():
@@ -2708,6 +2806,11 @@ def ai_settings(
          "changed lines of your own code, credentials redacted" if settings.send_code
          else "only files, dependencies, env vars and services",
          "lw ai settings --no-send-code" if settings.send_code else "lw ai settings --send-code"),
+        ("agent", "on" if settings.engine == "agent" else "off",
+         ("reads both versions and follows the change before answering; several requests"
+          if not agent_problem() else "cannot run here, so one request is used meanwhile — see below")
+         if settings.engine == "agent" else "one request per change, with the diff",
+         "lw ai settings --no-agent" if settings.engine == "agent" else "lw ai settings --agent"),
         ("retries", str(settings.max_retries), "rate limits, outages, timeouts, dropped connections",
          "lw ai settings --retries 6"),
         ("timeout", f"{settings.timeout_seconds}s" if settings.timeout_seconds else "default",
@@ -2726,6 +2829,10 @@ def ai_settings(
         style = "green" if value in {"on", "yes"} else ("yellow" if value in {"off", "no"} else "")
         table.add_row(setting, f"[{style}]{value}[/{style}]" if style else value, meaning, command)
     console.print(table)
+    problem = agent_problem()
+    if settings.engine == "agent" and problem:
+        console.print(f"\n[yellow]![/yellow] The agent is switched on but cannot run here: "
+                      f"{escape(problem)}. {escape(INSTALL_HINT)}.")
 
 
 # ---------------------------------------------------------------- editing

@@ -81,8 +81,11 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # The agents extra installs nothing on 3.10 (deepagents needs 3.11), so
+      # the 3.10 legs test `lw explain --agent` saying it cannot run, and the
+      # others drive a real deepagents agent in tests/test_agent.py.
       - name: Install package and test dependencies
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,agents]"
 
       # The git mirror is a real feature (one commit per version, tagged
       # v0001…), and test_watcher.py exercises it, so git must be usable

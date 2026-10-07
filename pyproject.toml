@@ -29,6 +29,17 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov", "ruff>=0.15"]
 lint = ["ruff>=0.15"]
+# The agent behind `lw explain --agent` (src/lambda_watcher/ai/agent.py). Kept
+# out of the core install on purpose: it brings LangChain, LangGraph and two
+# vendor SDKs, and deepagents needs Python 3.11, while everything else installs
+# into a bare 3.10. On 3.10 the markers make this extra install nothing, and
+# `lw` says so instead of failing. The upper bound is deliberate: deepagents is
+# pre-1.0 and its middleware API moved between 0.5, 0.6 and 0.7 — raise it after
+# tests/test_agent.py passes against the new release.
+agents = [
+    "deepagents>=0.7.20,<0.8; python_version >= '3.11'",
+    "langchain-openai>=1.0,<2; python_version >= '3.11'",
+]
 
 [project.scripts]
 lambda-watcher = "lambda_watcher.cli:main"

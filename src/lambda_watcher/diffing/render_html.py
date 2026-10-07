@@ -1883,7 +1883,9 @@ def _provenance(ex: Explanation) -> str:
     "Written by claude-sonnet-5 (Anthropic) on 2026-09-24 10:02 · from 14 of
     16 changed files · 2 values redacted". What the model was *not* shown is
     the part that matters most: an explanation of 3 files out of 40 reads
-    exactly as confidently as one of all 40.
+    exactly as confidently as one of all 40. For an agent's explanation that
+    is how many of the changed files it opened: all of them were there to be
+    read, so the gap is its judgement rather than a length limit.
     """
     from ..ai.settings import PROVIDERS
 
@@ -1891,7 +1893,10 @@ def _provenance(ex: Explanation) -> str:
     parts = [f"Written by <b>{_esc(ex.model or ex.model_name or 'a model')}</b>"
              + (f" ({_esc(service)})" if service else "")
              + (f" on {_esc(format_ts(ex.created_at))}" if ex.created_at else "")]
-    if not ex.send_code:
+    if ex.engine == "agent":
+        parts.append(f"as an agent, in {ex.steps} step{'s' if ex.steps != 1 else ''}, having opened "
+                     f"{ex.files_sent} of {ex.files_total} changed file{'s' if ex.files_total != 1 else ''}")
+    elif not ex.send_code:
         parts.append("from the structure only — no code was sent")
     elif ex.files_total and ex.files_sent < ex.files_total:
         parts.append(f"from {ex.files_sent} of {ex.files_total} changed files"

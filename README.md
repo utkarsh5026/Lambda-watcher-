@@ -278,6 +278,21 @@ anything credential-shaped is replaced before sending — a mitigation, not a gu
 that must not leave your machine use `--no-send-code` or a local model. Keys live in
 `~/.lambda-watcher/ai.json`, readable only by you, never in `config.yaml`.
 
+For a change the diff alone cannot vouch for, **let an agent investigate first.** It reads both
+versions, follows a changed function to its callers, checks what a new setting does when it is
+missing, and answers in the same report card — slower, several requests, and an optional install
+(Python 3.11 or newer):
+
+```bash
+uv tool install --force --python 3.12 'lambda-watcher[agents]'   # or the same with pipx
+lw explain order-processor --agent           # investigate this change
+lw explain order-processor --agent --dry-run # every file it could read; sends nothing
+lw ai settings --agent                       # investigate every new version
+```
+
+It is built on [deepagents](https://github.com/langchain-ai/deepagents), sees the same redacted,
+vendor-free view of your code a single request would, and never touches the archive itself.
+
 <details>
 <summary>When a request fails</summary>
 
