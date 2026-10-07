@@ -79,7 +79,7 @@
   },
   "[python]": {
     // `ruff format` is deliberately NOT enforced in this repo (see CLAUDE.md):
-    // it would reformat 28 of 36 files, collapsing the manual alignment the
+    // it would reformat 57 of 70 files, collapsing the manual alignment the
     // code uses on purpose. Only `ruff check` gates CI, so only fixAll runs.
     "editor.formatOnSave": false,
     "editor.defaultFormatter": "charliermarsh.ruff",
