@@ -92,9 +92,15 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 600;
   color: var(--text); letter-spacing: -0.01em; white-space: nowrap; }
+/* The mark is a Lambda in Lambda's own orange, so a reader who lives in the
+   AWS console knows at a glance what this page is about. It is drawn here
+   rather than borrowed: AWS licenses its service icons for architecture
+   diagrams, not as another tool's logo. */
 .brand .logo { display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; border-radius: 7px; color: #fff; font-size: 14px; font-weight: 700;
-  background: linear-gradient(135deg, #6d74f2, #4148c9); box-shadow: inset 0 -1px 0 rgba(0,0,0,.18); }
+  width: 24px; height: 24px; border-radius: 6px; color: #fff;
+  background: linear-gradient(45deg, #c8511b, #ff9900); box-shadow: inset 0 -1px 0 rgba(0,0,0,.18); }
+.brand .logo svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2.3;
+  stroke-linecap: round; stroke-linejoin: round; }
 .crumbs { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--muted); }
 .crumbs .sep { color: var(--border); font-size: 18px; font-weight: 300; }
 .crumbs a { color: var(--muted); white-space: nowrap; }
@@ -1873,6 +1879,12 @@ def _sheet(diff: VersionDiff) -> str:
     )
 
 
+#: The λ in the top bar's mark: a hooked top, the long stroke down to a foot,
+#: and the short leg off it — the shape of the Lambda console's icon, drawn on
+#: a 24-unit grid to match the stroked glyphs elsewhere on the page.
+LOGO = ('<svg viewBox="0 0 24 24"><path d="M5 4h4.4l7.4 16H19.5"/>'
+        '<path d="M11.4 9.3 5.2 20"/></svg>')
+
 #: The magnifier drawn inside the filter box.
 SEARCH_GLYPH = "M7 12.2a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4zM10.8 10.8 14 14"
 
@@ -1923,7 +1935,7 @@ def _page(title: str, body: str, crumbs: list[Crumb], footer: str, *,
 <body>
 {before}
 <nav class="topbar"><div class="inner">
-  <span class="brand"><span class="logo" aria-hidden="true">λ</span><span class="name">lambda-watcher</span></span>
+  <span class="brand"><span class="logo" aria-hidden="true">{LOGO}</span><span class="name">lambda-watcher</span></span>
   {crumb_bar}
   <span class="when">Generated {_esc(_stamp_now())}</span>
 </div></nav>

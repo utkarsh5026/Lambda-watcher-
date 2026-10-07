@@ -27,6 +27,7 @@ from lambda_watcher.diffing.highlight import (
 )
 from lambda_watcher.diffing.render_html import (
     CSS,
+    LOGO,
     JS,
     NOSCRIPT,
     _Row,
@@ -664,3 +665,11 @@ def test_a_folded_folder_still_prints() -> None:
     """Paper has no arrow to click, so a folder folded on screen comes out open."""
     print_rules = CSS[CSS.index("@media print"):]
     assert ".folder.collapsed > .kids { display: block; }" in print_rules
+
+
+def test_the_mark_in_the_top_bar_travels_inside_the_page(cfg, db, ingestor: Ingestor, make_zip):
+    """The Lambda mark is inline SVG, so the page stays one file that opens offline."""
+    page = _report(cfg, db, ingestor, make_zip)
+
+    assert f'<span class="logo" aria-hidden="true">{LOGO}</span>' in page
+    assert "<img" not in page
