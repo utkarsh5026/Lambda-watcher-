@@ -276,6 +276,13 @@ is the aggregate gate to point branch protection at.
   equals `v<pyproject version>`, re-runs the suite on the tagged commit, publishes to PyPI via trusted
   publishing (OIDC, no stored token, environment `pypi`), then cuts a GitHub release.
 
+The report's code font is Cascadia Mono, subset to ~12 KB a weight and inlined into every page by
+`render_html.font_css()`, so a report opened offline or from an email looks the same. The files in
+[src/lambda_watcher/diffing/fonts/](src/lambda_watcher/diffing/fonts/) are generated, not hand-picked:
+[tools/subset_font.py](tools/subset_font.py) rebuilds them from a Cascadia Code release zip (needs
+`pip install fonttools brotli`). `OFL.txt` is the font's licence and has to ship beside them, which is
+what `[tool.setuptools.package-data]` in pyproject is for.
+
 ## Documentation examples
 
 Every terminal block in [README.md](README.md) and on the Pages site

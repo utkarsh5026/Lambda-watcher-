@@ -218,6 +218,50 @@ def test_timeline_renders():
     assert "v0002" in page and "v0001-v0002.html" in page and "first version" in page
 
 
+def _release(seq: int, **extra) -> dict:
+    """One version as ``lw report`` hands it to the history page."""
+    entry = {"seq": seq, "ingested_at": f"2026-01-0{seq}T00:00:00+00:00", "runtime": "python3.11",
+             "handler": "h.handler", "file_count": 3, "total_size": 100 * seq}
+    entry.update(extra)
+    return entry
+
+
+def test_the_history_reads_as_releases_newest_first():
+    """Each release is a node; the change it made is one link carrying its numbers."""
+    page = render_timeline("fn", [
+        _release(3, diff_href="v0002-v0003.html", diff_summary="1 modified", diff_lines=(24, 5),
+                 diff_findings=2, diff_deps=3, diff_env=1, runtime="python3.12", label="prod"),
+        _release(2, diff_href="v0001-v0002.html", diff_summary="1 added"),
+        _release(1),
+    ])
+    assert page.count('<li class="tl-item') == 3
+    assert page.count('<li class="tl-item latest"') == 1
+    assert page.index("v0003") < page.index("v0002") < page.index('id="v0001"')
+    assert '<a class="tl-change" href="v0002-v0003.html">' in page
+    assert '<span class="add">+24</span><span class="del">−5</span>' in page
+    assert "2 new findings" in page and "3 dependencies" in page and "1 new env var" in page
+    # The runtime moved since the version before, so it is called out, not listed.
+    assert ('runtime <span class="del">python3.11</span><span class="arrow">→</span>'
+            '<span class="add">python3.12</span>') in page
+    assert '<span class="chip label">prod</span>' in page
+    assert '<div class="tl-change first">' in page
+
+
+def test_the_history_without_numbers_still_renders():
+    """A caller that only knows the headline gets a page with less beside it, not an error."""
+    page = render_timeline("fn", [_release(2, diff_href="v0001-v0002.html"), _release(1)])
+    assert "View changes" in page and 'class="tl-nums"' not in page
+
+
+def test_the_history_escapes_what_a_model_wrote():
+    page = render_timeline("fn", [
+        _release(2, diff_href="v0001-v0002.html", ai_headline="<b>boom</b>", ai_risk="high"),
+        _release(1),
+    ])
+    assert "<b>boom</b>" not in page and "&lt;b&gt;boom&lt;/b&gt;" in page
+    assert '<span class="chip risk-high">high risk</span>' in page
+
+
 def test_archive_index_counts_what_the_latest_version_ships(cfg, db, ingestor: Ingestor, make_zip):
     ingestor.ingest(make_zip("fn.zip", {"lambda_function.py": PY_V1}))
     leaked = PY_V2 + f'\nSTRIPE = "{fake_secret("stripe")}"\n'

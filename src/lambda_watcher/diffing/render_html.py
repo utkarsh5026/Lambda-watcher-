@@ -6,6 +6,7 @@ attach to a change ticket, or send to a colleague.
 
 from __future__ import annotations
 
+import base64
 import html
 import os
 import re
@@ -13,11 +14,13 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cache
+from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..ai.explanation import PENDING_STALE_SECONDS
-from ..utils import format_ts, human_size, read_text, signed, slugify
+from ..utils import format_ts, human_size, read_text, relative_ts, signed, slugify
 from . import filetree, icons, intraline
 
 if TYPE_CHECKING:
@@ -30,6 +33,41 @@ from .highlight import highlight, highlight_lines, language_of
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 ICON_CSS = icons.css()
+
+
+@cache
+def font_css() -> str:
+    """The ``@font-face`` rules that carry the report's code font inside the page.
+
+    Cascadia Mono, cut down to the characters code and the report use — see
+    ``tools/subset_font.py`` — and inlined as data, because the page is one
+    file that has to look the same opened from a share, an email or a laptop
+    with no network. Both weights together add about 33 KB to a page.
+
+    ``unicode-range`` names what the subset holds, so a line of Japanese in a
+    comment goes straight to the next font in ``--mono`` rather than to a
+    missing glyph. A package installed without its font files is a worse
+    page, not a broken one: this returns nothing and the report falls back
+    to the system's monospace.
+    """
+    faces = []
+    for weight, name in ((400, "Regular"), (600, "SemiBold")):
+        try:
+            data = resources.files(__package__).joinpath(f"fonts/CascadiaMono-{name}.woff2").read_bytes()
+        except OSError:
+            return ""
+        faces.append(
+            '@font-face { font-family: "Cascadia Mono"; font-style: normal; '
+            f"font-weight: {weight}; font-display: swap; "
+            f'src: url(data:font/woff2;base64,{base64.b64encode(data).decode("ascii")}) format("woff2"); '
+            f"unicode-range: {FONT_RANGE}; }}"
+        )
+    return "\n".join(faces) + "\n"
+
+
+#: The characters the embedded font holds, as ``tools/subset_font.py`` cut it.
+FONT_RANGE = ("U+0020-007E, U+00A0-017F, U+2010-2027, U+2030-203A, U+2190-2193, U+21D2, "
+              "U+2212, U+2022, U+20AC, U+2122, U+2500-257F, U+25A0-25A1, U+2713-2717")
 
 #: A file's lines as ``(source, highlighted)`` pairs — see `_paint`.
 _Painted = list[tuple[str, str]] | None
@@ -49,8 +87,8 @@ CSS = """
   --radius: 12px;
   --sans: "Inter", "InterVariable", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
           Roboto, Helvetica, Arial, sans-serif;
-  --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, "SF Mono", Menlo, Consolas,
-          "Liberation Mono", monospace;
+  --mono: "Cascadia Mono", "Cascadia Code", ui-monospace, "JetBrains Mono", SFMono-Regular,
+          "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   /* Syntax tokens, One Light. Numbers and constants share a colour on purpose:
      both are literal values, and the eye reads them as the same thing. */
   --tk-c: #8b8f97; --tk-k: #a626a4; --tk-s: #50a14f; --tk-n: #986801;
@@ -58,6 +96,14 @@ CSS = """
   /* What a model wrote wears its own colour, so it is never mistaken for
      something the diff engine measured. */
   --ai: #6b4fd8; --ai-wash: #f5f2ff; --ai-edge: #e3dbfd;
+  /* The diff's own washes, a step quieter than the add and delete colours the
+     labels use. A label is a few pixels and has to be read at a glance; a
+     diff is a screenful, and at label strength the colour drowns out the
+     syntax colours of the code it sits under. */
+  --d-add-bg: #f3faf5; --d-add-word: #d5efde; --d-add-ln: #e8f4ec; --d-add-edge: #9bd2b0;
+  --d-add-num: #4e8a64;
+  --d-del-bg: #fdf5f6; --d-del-word: #f4dade; --d-del-ln: #f7e8eb; --d-del-edge: #e2aab4;
+  --d-del-num: #a8606c;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -71,6 +117,10 @@ CSS = """
     --tk-c: #7f848e; --tk-k: #c678dd; --tk-s: #98c379; --tk-n: #d19a66;
     --tk-t: #d19a66; --tk-f: #61afef; --tk-y: #56b6c2;
     --ai: #b3a1ff; --ai-wash: #1d1834; --ai-edge: #372d63;
+    --d-add-bg: #121f19; --d-add-word: #1f3a2a; --d-add-ln: #15241c; --d-add-edge: #2e6544;
+    --d-add-num: #6aa883;
+    --d-del-bg: #21161a; --d-del-word: #42222a; --d-del-ln: #28191e; --d-del-edge: #723843;
+    --d-del-num: #c4838d;
   }
 }
 * { box-sizing: border-box; }
@@ -318,7 +368,11 @@ table.grid th.num { text-align: right; }
 .file.active .row { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
 .file.active .row::after { border-color: var(--accent); transform: translateX(2px) rotate(45deg); }
 .row .path { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
-.row .path .p { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+/* A zero basis keeps a long name on the line beside its icon, wrapping inside
+   its own box, rather than dropping the whole name under the icon whenever
+   the list is narrow — which it is, beside a docked sheet. */
+.row .path .p { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere;
+  flex: 1 1 0; min-width: 0; }
 /* The directory part of a path is quieter than its name, which is the part a
    reader is scanning for. */
 .path .dir { color: var(--faint); }
@@ -350,20 +404,20 @@ table.grid th.num { text-align: right; }
 .diff td.mark { width: 1%; padding: 0 4px 0 8px; text-align: center; color: var(--faint);
   user-select: none; border-left: 2px solid transparent; }
 .diff td.code { padding-left: 4px; width: 100%; }
-.diff tr.add td.code, .diff tr.add td.mark { background: var(--add-bg); }
-.diff tr.add td.mark { color: var(--add-fg); border-left-color: var(--add-fg); }
-.diff tr.add td.ln { background: var(--add-gutter); color: var(--add-fg); }
-.diff tr.del td.code, .diff tr.del td.mark { background: var(--del-bg); }
-.diff tr.del td.mark { color: var(--del-fg); border-left-color: var(--del-fg); }
-.diff tr.del td.ln { background: var(--del-gutter); color: var(--del-fg); }
+.diff tr.add td.code, .diff tr.add td.mark { background: var(--d-add-bg); }
+.diff tr.add td.mark { color: var(--d-add-num); border-left-color: var(--d-add-edge); }
+.diff tr.add td.ln { background: var(--d-add-ln); color: var(--d-add-num); }
+.diff tr.del td.code, .diff tr.del td.mark { background: var(--d-del-bg); }
+.diff tr.del td.mark { color: var(--d-del-num); border-left-color: var(--d-del-edge); }
+.diff tr.del td.ln { background: var(--d-del-ln); color: var(--d-del-num); }
 .diff tr.hunk td { background: var(--accent-wash); color: var(--accent); font-size: 11.5px;
   padding: 5px 12px; border-top: 1px solid var(--accent-edge); border-bottom: 1px solid var(--accent-edge); }
 .diff tr.hunk:first-child td { border-top: none; }
 /* Which words of the line actually changed. This sits on top of the row wash,
    so it has to be a step stronger than it in both themes. */
 .wd { border-radius: 3px; }
-tr.add .wd { background: var(--add-word); }
-tr.del .wd { background: var(--del-word); }
+tr.add .wd { background: var(--d-add-word); }
+tr.del .wd { background: var(--d-del-word); }
 /* A file with no usable lines: one row per changed run, the unchanged text
    either side dimmed so the eye lands on the part that moved. Shares the add
    and delete colours with the table above so the two read as one legend. */
@@ -375,9 +429,9 @@ tr.del .wd { background: var(--del-word); }
 .wordedit td.at { width: 1%; text-align: right; color: var(--faint);
   background: var(--panel); border-right: 1px solid var(--rule); }
 .wordedit td.run { width: 100%; color: var(--faint); }
-.wordedit .was { background: var(--del-word); color: var(--del-fg); border-radius: 3px; }
+.wordedit .was { background: var(--d-del-word); color: var(--d-del-num); border-radius: 3px; }
 .wordedit .was.gone { text-decoration: line-through; }
-.wordedit .now { background: var(--add-word); color: var(--add-fg); border-radius: 3px; }
+.wordedit .now { background: var(--d-add-word); color: var(--d-add-num); border-radius: 3px; }
 .tk-c { color: var(--tk-c); font-style: italic; }
 .tk-k { color: var(--tk-k); }
 .tk-s { color: var(--tk-s); }
@@ -489,7 +543,8 @@ body.dragging, body.dragging .sheet { transition: none; }
   .crumbs a, .crumbs span { overflow: hidden; text-overflow: ellipsis; }
   header.top { padding-top: 24px; }
   h1 { font-size: 23px; }
-  .stat { flex-basis: 50%; border-top: 1px solid var(--rule); }
+  .stat { flex-basis: 50%; border-top: 1px solid var(--rule); padding: 14px 16px; }
+  .stat .v { font-size: 20px; flex-wrap: wrap; row-gap: 0; }
   .files { --tree-x: 16px; --tree-step: 12px; }
   .row { flex-wrap: wrap; padding: 10px 16px; row-gap: 6px; }
   .row .path { flex-basis: 100%; }
@@ -519,6 +574,63 @@ body.dragging, body.dragging .sheet { transition: none; }
   .folder.collapsed > .kids { display: block; }
 }
 .hidden { display: none !important; }
+
+/* ---- the version history ------------------------------------------- */
+/* One line down the left with a node per release, newest at the top, so the
+   page reads as what happened in order. The change each release made is a
+   panel of its own and the whole panel is the link: it is the one thing on
+   the row a reader came to click. */
+.timeline { list-style: none; margin: 0; padding: 4px 20px 14px; }
+.tl-item { position: relative; display: flex; gap: 16px; padding: 0 0 18px; }
+.tl-item:last-child { padding-bottom: 4px; }
+.tl-item::before { content: ""; position: absolute; left: 6px; top: 18px; bottom: -4px; width: 2px;
+  background: var(--rule); }
+.tl-item:last-child::before { display: none; }
+.tl-node { position: relative; z-index: 1; flex: 0 0 auto; width: 14px; height: 14px; margin-top: 5px;
+  border-radius: 50%; background: var(--card); border: 2px solid var(--border); }
+.tl-item.latest .tl-node { border-color: var(--accent); background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-wash); }
+.tl-body { flex: 1; min-width: 0; }
+.tl-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 24px; }
+.tl-ver { font-family: var(--mono); font-weight: 650; font-size: 14px; color: var(--text); }
+.tl-ver:hover { color: var(--accent); text-decoration: none; }
+.tl-when { margin-left: auto; color: var(--faint); font-size: 12.5px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.tl-change { display: flex; align-items: center; gap: 16px; margin-top: 8px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text);
+  transition: border-color .15s, background .15s, box-shadow .15s; }
+a.tl-change:hover { text-decoration: none; border-color: var(--accent-edge); background: var(--card);
+  box-shadow: var(--shadow); }
+a.tl-change:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tl-change.first { background: none; border-style: dashed; }
+.tl-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.tl-what { font-weight: 600; font-size: 14.5px; letter-spacing: -0.01em; }
+.tl-what .ai-mark { font-size: 13px; }
+.tl-sum { color: var(--muted); font-size: 13px; }
+.tl-sum .chip { margin-left: 6px; vertical-align: 1px; }
+.tl-nums { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 2px;
+  font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tl-num { display: inline-flex; align-items: center; gap: 6px; }
+.tl-num .add, .tl-num .del { font-weight: 600; }
+.warn-text { color: var(--warn-fg); }
+.tl-open { flex: 0 0 auto; color: var(--accent); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.tl-open::after { content: " →"; }
+.tl-alert { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.tl-moved { font-size: 12.5px; padding: 3px 10px; border-radius: 8px; background: var(--warn-bg);
+  border: 1px solid var(--warn-edge); color: var(--warn-fg); max-width: 100%; overflow-wrap: anywhere; }
+.tl-moved .del, .tl-moved .add { font-family: var(--mono); font-size: 12px; }
+.tl-meta { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px;
+  color: var(--faint); font-size: 12.5px; }
+.tl-meta .mono { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.tl-meta .sep { color: var(--border); }
+@media (max-width: 640px) {
+  .timeline { padding-left: 16px; padding-right: 16px; }
+  .tl-when { margin-left: 0; flex-basis: 100%; }
+  .tl-change { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tl-change { transition: none; }
+}
 
 /* ---- the AI summary --------------------------------------------------- */
 /* The card a model's explanation is drawn in. It sits above the numbers
@@ -1929,7 +2041,7 @@ def _page(title: str, body: str, crumbs: list[Crumb], footer: str, *,
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{_esc(title)}</title>
-<style>{CSS}{ICON_CSS}</style>
+<style>{font_css()}{CSS}{ICON_CSS}</style>
 {head}
 </head>
 <body>
@@ -2103,6 +2215,119 @@ def _ai_line(entry: dict[str, Any]) -> str:
     return f'<div class="ai-line">{_esc(headline)}{chip}</div>'
 
 
+def _step_numbers(entry: dict[str, Any]) -> str:
+    """The measured part of one step in the history: lines, findings, dependencies.
+
+    ``+24 −5 ■■■■□ · 3 new findings · 3 dependencies``. Every key is optional —
+    a history written by a caller that only knows the headline still renders,
+    just with less beside it.
+    """
+    parts: list[str] = []
+    lines = entry.get("diff_lines")
+    if lines:
+        added, removed = lines
+        parts.append(f'<span class="add">+{added:,}</span><span class="del">−{removed:,}</span>'
+                     f"{_bar(added, removed)}")
+    findings = entry.get("diff_findings") or 0
+    if findings:
+        parts.append(f'<span class="chip high">{findings} new finding{"s" if findings != 1 else ""}</span>')
+    deps = entry.get("diff_deps") or 0
+    if deps:
+        parts.append(f'<span>{deps} dependenc{"ies" if deps != 1 else "y"}</span>')
+    env = entry.get("diff_env") or 0
+    if env:
+        parts.append(f'<span class="warn-text">{env} new env var{"s" if env != 1 else ""}</span>')
+    return "".join(f'<span class="tl-num">{part}</span>' for part in parts)
+
+
+def _timeline_item(entry: dict[str, Any], older: dict[str, Any] | None, latest: bool) -> str:
+    """One release in the history: when it arrived, what it changed, and what it is.
+
+    The change is the part of the row worth reading, so it is the big target:
+    a panel holding the AI headline when there is one, the measured summary
+    either way, and the numbers beside it, all one link to the comparison.
+    What the version *is* — runtime, handler, size, the zip it came from —
+    is a quiet line underneath, except where it moved since the version
+    before, because a runtime that changed is a deploy decision.
+    """
+    seq = entry["seq"]
+    when = entry.get("ingested_at")
+    chips = '<span class="chip added">latest</span>' if latest else ""
+    if entry.get("label"):
+        chips += f'<span class="chip label">{_esc(entry["label"])}</span>'
+    head = (f'<div class="tl-head"><a class="tl-ver" id="v{seq:04d}" href="#v{seq:04d}">v{seq:04d}</a>'
+            f'{chips}<span class="tl-when" title="{_esc(format_ts(when))}">'
+            f'{_esc(relative_ts(when))} · {_esc(format_ts(when))}</span></div>')
+
+    href = entry.get("diff_href")
+    if href:
+        headline = entry.get("ai_headline")
+        risk = entry.get("ai_risk")
+        summary = entry.get("diff_summary") or "view the changes"
+        what = (f'<span class="tl-what"><span class="ai-mark" aria-hidden="true">✦</span> '
+                f'{_esc(headline)}</span><span class="tl-sum">{_esc(summary)}'
+                + (f' <span class="chip risk-{_esc(risk)}">{_esc(risk)} risk</span>' if risk else "")
+                + "</span>"
+                if headline else f'<span class="tl-what">{_esc(summary.capitalize())}</span>')
+        numbers = _step_numbers(entry)
+        change = (f'<a class="tl-change" href="{_esc(href)}"><span class="tl-text">{what}'
+                  + (f'<span class="tl-nums">{numbers}</span>' if numbers else "")
+                  + '</span><span class="tl-open">View changes</span></a>')
+    else:
+        change = ('<div class="tl-change first"><span class="tl-text"><span class="tl-what">'
+                  'First archived version</span><span class="tl-sum">Nothing older to compare it '
+                  "with: this is the first version, and every later one is measured against it."
+                  "</span></span></div>")
+
+    meta = []
+    moved = []
+    for key, label in (("runtime", "runtime"), ("handler", "handler")):
+        value = entry.get(key) or "?"
+        before = older.get(key) if older else None
+        if older is not None and before and before != entry.get(key):
+            moved.append(f'<span class="tl-moved">{label} <span class="del">{_esc(before)}</span>'
+                         f'<span class="arrow">→</span><span class="add">{_esc(value)}</span></span>')
+        else:
+            meta.append(f'<span class="mono">{_esc(value)}</span>')
+    size = entry.get("total_size", 0)
+    size_text = _esc(human_size(size))
+    if older is not None and older.get("total_size") is not None and size != older["total_size"]:
+        size_text += f' <span class="dim">({signed(size - older["total_size"])} B)</span>'
+    count = entry.get("file_count", 0)
+    meta.append(f'{count:,} file{"s" if count != 1 else ""}')
+    meta.append(size_text)
+    if entry.get("source_name"):
+        meta.append(f'from <span class="mono">{_esc(entry["source_name"])}</span>')
+    meta_html = '<span class="sep">·</span>'.join(meta)
+    moved_html = f'<div class="tl-alert">{"".join(moved)}</div>' if moved else ""
+    css = "tl-item latest" if latest else "tl-item"
+    return (f'<li class="{css}"><span class="tl-node" aria-hidden="true"></span><div class="tl-body">'
+            f'{head}{change}{moved_html}<div class="tl-meta">{meta_html}</div></div></li>')
+
+
+def _timeline_stats(versions: list[dict[str, Any]]) -> str:
+    """The rail over the history: how many versions, the newest, the first, and how the size moved."""
+    newest, oldest = versions[0], versions[-1]
+    size, first_size = newest.get("total_size", 0), oldest.get("total_size", 0)
+    many = len(versions) > 1
+    cells = [
+        (f"{len(versions):,}", "archived versions", "", ""),
+        (f"v{newest['seq']:04d}", "latest", relative_ts(newest.get("ingested_at")), ""),
+        (format_ts(oldest.get("ingested_at")).split(" ")[0], "first archived", "", ""),
+        (human_size(size), "package size", f"{signed(size - first_size)} B" if many else "",
+         f"vs v{oldest['seq']:04d}" if many else ""),
+        (newest.get("runtime") or "?", "runtime", "", ""),
+    ]
+    return '<div class="stats">' + "".join(
+        f'<div class="stat"><div class="v">{_esc(value)}'
+        + (f'<span class="delta">{_esc(aside)}</span>' if aside else "")
+        + f'</div><div class="k">{_esc(label)}'
+        + (f' <span class="hint">{_esc(hint)}</span>' if hint else "")
+        + "</div></div>"
+        for value, label, aside, hint in cells
+    ) + "</div>"
+
+
 def render_timeline(
     function_name: str,
     versions: list[dict[str, Any]],
@@ -2110,55 +2335,37 @@ def render_timeline(
     *,
     archive_href: str | None = None,
 ) -> str:
-    """Index page: every archived version of one function, newest first.
+    """Index page: every archived version of one function, newest first, as a timeline.
 
     ``versions`` entries carry the per-version stats plus ``diff_href`` /
     ``diff_summary`` describing the step from the previous version, and
     ``ai_headline`` / ``ai_risk`` when that step has been explained — which
     turns the history into a list of what each release *did*, not only how
-    many files it touched. ``archive_href`` links the top bar back to the
+    many files it touched. ``diff_lines``, ``diff_findings``, ``diff_deps`` and
+    ``diff_env`` add the step's numbers when the caller measured them; see
+    :func:`_step_numbers`. ``archive_href`` links the top bar back to the
     archive's front page, when the caller knows where that is.
-    """
-    rows: list[str] = []
-    for entry in versions:
-        seq = entry["seq"]
-        href = entry.get("diff_href")
-        step = (
-            f'<a href="{_esc(href)}">{_esc(entry.get("diff_summary") or "view diff")}</a>'
-            if href
-            else '<span class="dim">first version</span>'
-        )
-        step += _ai_line(entry)
-        label = (f' <span class="chip label">{_esc(entry["label"])}</span>'
-                 if entry.get("label") else "")
-        rows.append(
-            "<tr>"
-            f'<td class="mono"><strong>v{seq:04d}</strong>{label}</td>'
-            f'<td>{_esc(format_ts(entry.get("ingested_at")))}</td>'
-            f'<td class="mono">{_esc(entry.get("runtime") or "?")}</td>'
-            f'<td class="mono">{_esc(entry.get("handler") or "?")}</td>'
-            f'<td class="num">{entry.get("file_count", 0):,}</td>'
-            f'<td class="num">{_esc(human_size(entry.get("total_size", 0)))}</td>'
-            f'<td class="mono dim">{_esc(str(entry.get("source_name") or ""))}</td>'
-            f"<td>{step}</td>"
-            "</tr>"
-        )
 
+    Each release is a node on one line rather than a row of a table, because
+    the question this page answers is *what happened, in order* — and the
+    answer to that is a sentence per release, not eight columns of which the
+    reader wants one.
+    """
     count = len(versions)
-    table = f"""<div class="scroll"><table class="grid">
-    <thead><tr>
-      <th>version</th><th>archived</th><th>runtime</th><th>handler</th>
-      <th class="num">files</th><th class="num">size</th>
-      <th>downloaded as</th><th>change from previous</th>
-    </tr></thead>
-    <tbody>{''.join(rows)}</tbody>
-  </table></div>"""
+    items = "".join(
+        _timeline_item(entry, versions[i + 1] if i + 1 < count else None, latest=i == 0)
+        for i, entry in enumerate(versions)
+    )
+    listing = (f'<ol class="timeline">{items}</ol>' if versions else
+               '<div class="empty"><span class="big">Nothing archived for this function yet.</span>'
+               'Download its zip from the Lambda console and <span class="cmd">lw</span> picks it up.</div>')
     body = f"""  <header class="top">
     <div class="eyebrow">Version history</div>
     <h1>{_esc(function_name)}</h1>
     <div class="lead">{count} archived version{'s' if count != 1 else ''} · newest first</div>
   </header>
-  {_section("Versions", table, count=count)}"""
+  {_timeline_stats(versions) if versions else ""}
+  {_section("Releases", listing, count=count, aside="click a change to open its diff")}"""
     crumbs: list[Crumb] = [("All functions", archive_href), (function_name, None)]
     footer = f"Generated by {_esc(generated_by)} on {_esc(_stamp_now())}."
     return _page(f"{function_name} · version history", body, crumbs, footer)

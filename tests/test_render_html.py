@@ -32,6 +32,7 @@ from lambda_watcher.diffing.render_html import (
     NOSCRIPT,
     _Row,
     _row_code,
+    font_css,
     render_html,
 )
 from lambda_watcher.ingest import Ingestor
@@ -673,3 +674,37 @@ def test_the_mark_in_the_top_bar_travels_inside_the_page(cfg, db, ingestor: Inge
 
     assert f'<span class="logo" aria-hidden="true">{LOGO}</span>' in page
     assert "<img" not in page
+
+
+# ------------------------------------------------------------ the code font
+def test_the_code_font_travels_inside_the_page(cfg, db, ingestor: Ingestor, make_zip):
+    """Cascadia Mono is inlined, so the page reads the same opened anywhere, offline included."""
+    faces = font_css()
+    assert faces.count("@font-face") == 2
+    assert "font-weight: 400" in faces and "font-weight: 600" in faces
+    assert faces.count("url(data:font/woff2;base64,") == 2
+    assert '--mono: "Cascadia Mono"' in CSS
+    page = _report(cfg, db, ingestor, make_zip)
+    assert faces in page
+    # Small enough to carry on every page the watcher writes.
+    assert len(faces) < 60_000
+
+
+def test_the_font_ships_with_its_licence() -> None:
+    """The OFL travels with the font files; the wheel's package data names both."""
+    from importlib import resources
+
+    fonts = resources.files("lambda_watcher.diffing").joinpath("fonts")
+    names = {entry.name for entry in fonts.iterdir()}
+    assert {"CascadiaMono-Regular.woff2", "CascadiaMono-SemiBold.woff2", "OFL.txt"} <= names
+    assert "SIL Open Font License" in fonts.joinpath("OFL.txt").read_text(encoding="utf-8")
+
+
+def test_the_diff_washes_are_defined_in_both_themes() -> None:
+    """A token defined for one theme only paints the other theme's diff in the wrong colour."""
+    light, dark = CSS.split("@media (prefers-color-scheme: dark)", 1)
+    dark = dark.split("}\n}", 1)[0]
+    tokens = set(re.findall(r"(--d-(?:add|del)-[a-z]+):", light))
+    assert tokens, "no diff tokens parsed"
+    for token in sorted(tokens):
+        assert f"{token}:" in dark, f"{token} has no dark-theme value"

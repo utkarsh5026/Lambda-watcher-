@@ -1788,6 +1788,11 @@ def report(
                        history_href="index.html", ai=panel_for(store, pair, settings))
             entry["diff_href"] = filename
             entry["diff_summary"] = pair.headline()
+            if pair.diffs_computed:
+                entry["diff_lines"] = (pair.total_added_lines, pair.total_removed_lines)
+            entry["diff_findings"] = len(pair.findings_new)
+            entry["diff_deps"] = len(pair.deps)
+            entry["diff_env"] = len(pair.env_added)
             explained = headline_for(store, pair.a_meta, pair.b_meta)
             if explained:
                 entry["ai_headline"], entry["ai_risk"] = explained
