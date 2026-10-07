@@ -10,6 +10,7 @@ they do, and name the command to regenerate from.
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import subprocess
@@ -17,6 +18,12 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from lambda_watcher.ai.explanation import CHANGE_KINDS, LEVELS, parse_answer
+from lambda_watcher.ai.prompt import build_prompt
+from lambda_watcher.demo import stage_downloads
+from lambda_watcher.diffing.build import diff_from_index
+from lambda_watcher.store import Store
 
 # Rich renders the same output differently on a Windows console: it substitutes
 # the rounded box corners the diff panel is drawn with (╭ becomes ┌, while │ is
@@ -33,6 +40,7 @@ REPO = Path(__file__).resolve().parents[1]
 SITE = REPO / "docs" / "index.html"
 README = REPO / "README.md"
 BUILDER = REPO / "docs" / "examples" / "build_demo.py"
+SAMPLE_EXPLANATION = REPO / "docs" / "examples" / "sample-explanation.json"
 
 
 # Three things legitimately differ between runs: when a version was archived,
@@ -255,3 +263,39 @@ def test_every_command_has_a_row_in_the_readme() -> None:
     listed = {name for row in table for name in re.findall(r"`([a-z]+)[ `]", row.split("|")[1])}
     missing = sorted(_registered_commands() - listed)
     assert not missing, f"commands missing from the README's command table: {missing}"
+
+
+def test_the_sample_explanation_answers_the_demo_change_as_asked(cfg, db, ingestor, tmp_path: Path) -> None:
+    """``sample-explanation.json`` stays a real answer to the demo's v1 → v2, shaped as the prompt asks.
+
+    The site publishes it as what ``lw explain`` makes of that change, so it has
+    to keep being one. Every file it cites must be a file the change has —
+    :func:`parse_answer` drops any other, and the report loses the link without
+    a word — and it keeps to the kinds, levels and lengths
+    :data:`~lambda_watcher.ai.prompt.SYSTEM_PROMPT` sets. A demo edit that
+    renames a file fails here rather than on the published page.
+    """
+    v1, v2, _ = stage_downloads(tmp_path / "dl")
+    for zipped in (v1, v2):
+        ingestor.ingest(zipped)
+    function = db.get_function_by_name("order-processor")
+    assert function is not None
+    a, b = db.get_version(function["id"], 1), db.get_version(function["id"], 2)
+    built = build_prompt(diff_from_index(db, Store(cfg), cfg.diff, function["name"], a, b))
+
+    reply = SAMPLE_EXPLANATION.read_text(encoding="utf-8")
+    answer = json.loads(reply)
+    points = answer["changes"] + answer["risks"]
+    cited = set(answer["files"]) | {path for item in points for path in item["files"]}
+    assert cited <= built.paths, f"cites files the demo change does not have: {sorted(cited - built.paths)}"
+
+    assert len(answer["headline"]) <= 100
+    assert answer["risk"] in LEVELS
+    assert len(answer["changes"]) <= 8 and len(answer["risks"]) <= 6 and len(answer["checklist"]) <= 8
+    assert {item["kind"] for item in answer["changes"]} <= set(CHANGE_KINDS)
+    assert {item["level"] for item in answer["risks"]} <= set(LEVELS)
+    assert not [item["title"] for item in points if len(item["title"]) > 80]
+
+    explanation = parse_answer(reply, built.paths)
+    assert explanation.structured and not explanation.is_empty
+    assert set(explanation.file_notes) == set(answer["files"])

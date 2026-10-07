@@ -635,54 +635,130 @@ a.tl-change:focus-visible { outline: 2px solid var(--accent); outline-offset: 2p
 /* ---- the AI summary --------------------------------------------------- */
 /* The card a model's explanation is drawn in. It sits above the numbers
    because it is the one part of the page written as sentences — the part to
-   read first — and it is tinted violet throughout so nothing in it is ever
-   taken for a measurement. Every file it mentions is a button that opens that
-   file's diff, so a claim is one click from the lines it is about. */
+   read first — and its chrome is violet so nothing in it is ever taken for a
+   measurement. It reads as a deploy brief: on the left what the change does,
+   in prose; on the right, in a rail of its own, the verdict and what to do
+   about it. Every file it mentions opens that file's diff, so a claim is one
+   click from the lines it is about. */
 .card.ai { border-color: var(--ai-edge); overflow: hidden; }
 .card.ai > .sec-head { background: var(--ai-wash); border-bottom: 1px solid var(--ai-edge); }
 .card.ai h2 { color: var(--ai); }
 .ai-mark { color: var(--ai); font-size: 15px; line-height: 1; }
-.ai-body { padding: 16px 20px 6px; }
-.ai-headline { font-size: 17px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.4;
-  margin: 0 0 8px; color: var(--text); }
-.ai-summary { margin: 0 0 10px; color: var(--text); max-width: 78ch; white-space: pre-wrap; }
-.ai-why { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
-.ai-cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 8px 28px;
-  margin-top: 6px; }
-.ai-cols.single { grid-template-columns: minmax(0, 1fr); }
-.ai-block h3 { font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--faint); margin: 12px 0 8px; display: flex; align-items: center; gap: 8px; }
-.ai-list { list-style: none; margin: 0 0 8px; padding: 0; }
-.ai-list li { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0;
-  border-top: 1px solid var(--rule); }
-.ai-list li:first-child { border-top: none; padding-top: 2px; }
-.ai-list .chip { min-width: 98px; justify-content: flex-start; margin-top: 1px; }
-.ai-block h3 .count { text-transform: none; letter-spacing: 0; }
-.ai-list .what { min-width: 0; }
-.ai-list b { font-weight: 600; }
-.ai-list p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
-.ai-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.ai-file { font: 500 11.5px/1.5 var(--mono); padding: 1px 8px; border-radius: 6px; cursor: pointer;
-  background: var(--sunken); border: 1px solid var(--border); color: var(--text);
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-file:hover { border-color: var(--ai); color: var(--ai); }
-.ai-file:focus-visible { outline: 2px solid var(--ai); outline-offset: 1px; }
-span.ai-file { cursor: default; }
-span.ai-file:hover { border-color: var(--border); color: var(--text); }
-.chip.risk-high, .chip.k-security, .chip.k-removal { background: var(--del-gutter); color: var(--del-fg); }
-.chip.risk-medium, .chip.k-config, .chip.k-dependency { background: var(--warn-bg); color: var(--warn-fg); }
-.chip.risk-low, .chip.k-feature { background: var(--add-gutter); color: var(--add-fg); }
-.chip.k-fix, .chip.k-behaviour { background: var(--accent-wash); color: var(--accent); }
-.chip.ai-chip { background: var(--ai-wash); color: var(--ai); }
-.ai-check { list-style: none; margin: 0 0 8px; padding: 0; }
-.ai-check li { padding: 5px 0; }
-.ai-check label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
-.ai-check input { margin: 3px 0 0; accent-color: var(--ai); width: 15px; height: 15px; flex: 0 0 auto; }
+.ai-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 368px); }
+.ai-grid.single { grid-template-columns: minmax(0, 1fr); }
+.ai-lede { padding: 24px 28px 26px; min-width: 0; }
+.ai-rail { padding: 22px 22px 24px; min-width: 0; background: var(--panel);
+  border-left: 1px solid var(--rule); }
+.ai-headline { font-size: 21px; font-weight: 650; letter-spacing: -0.022em; line-height: 1.32;
+  margin: 0; max-width: 34em; color: var(--text); text-wrap: balance; }
+.ai-summary { margin: 12px 0 0; font-size: 15px; line-height: 1.65; color: var(--text);
+  max-width: 68ch; white-space: pre-wrap; }
+.ai-sec { margin-top: 28px; }
+.ai-rail .ai-sec { margin-top: 26px; }
+.ai-rail > .ai-sec:first-child, .ai-lede > .ai-sec:first-child { margin-top: 0; }
+/* Words for a screen reader that the eye gets from a meter or a colour. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.ai-sec h3 { font-size: 13px; font-weight: 650; letter-spacing: -0.005em; color: var(--text);
+  margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+.ai-sec h3 .ai-done { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 500;
+  font-variant-numeric: tabular-nums; }
+
+/* What changed: one entry per change, in the order the model ranked them.
+   The kind is a coloured square down the left edge, so a security change
+   stands out of the column before a word is read, and is named again in
+   words under the entry for anyone who does not read colour. */
+.ai-changes { list-style: none; margin: 0; padding: 0; display: grid; gap: 18px; }
+.ai-changes li { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 14px; }
+.ai-changes .k-dot { width: 8px; height: 8px; border-radius: 2px; margin-top: 7px;
+  background: var(--k, var(--faint)); }
+.ai-changes b { font-weight: 600; font-size: 14.5px; letter-spacing: -0.01em; }
+.ai-changes p { margin: 3px 0 0; color: var(--muted); font-size: 13.5px; line-height: 1.55;
+  max-width: 72ch; }
+.ai-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-top: 6px;
+  font-size: 12px; }
+.ai-meta .k-name { color: var(--k, var(--muted)); font-weight: 600; text-transform: capitalize; }
+.k-security, .k-removal { --k: var(--del-fg); }
+.k-config, .k-dependency { --k: var(--warn-fg); }
+.k-feature { --k: var(--add-fg); }
+.k-fix, .k-behaviour { --k: var(--accent); }
+.k-refactor, .k-other { --k: var(--faint); }
+
+/* A file the model cites, set as a link rather than a chip: it is a
+   reference inside a sentence, and a row of boxes under every entry made the
+   card read as a form. Plain text when the page has no diff to open. */
+.ai-files { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+.ai-file { font: 500 12px/1.5 var(--mono); padding: 0; border: 0; background: none; color: var(--ai);
+  cursor: pointer; text-decoration: underline; text-decoration-color: var(--ai-edge);
+  text-underline-offset: 3px; overflow-wrap: anywhere; text-align: left; }
+.ai-file:hover { text-decoration-color: currentColor; }
+.ai-file:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; border-radius: 3px; }
+span.ai-file { color: var(--muted); text-decoration: none; cursor: default; }
+
+/* The verdict: how careful to be, drawn as a meter of three bars as well as
+   said in words. It is the card's one loud element — the question a reader
+   brings to a deploy is "can I ship this?", and this is the answer. */
+.meter { display: inline-flex; gap: 3px; flex: 0 0 auto; }
+.meter i { width: 10px; height: 5px; border-radius: 2px; background: var(--border); }
+.meter.lvl-high i.on { background: var(--del-fg); }
+.meter.lvl-medium i.on { background: var(--warn-fg); }
+.meter.lvl-low i.on { background: var(--add-fg); }
+.ai-verdict { padding: 14px 16px 15px; border-radius: 10px; background: var(--card);
+  border: 1px solid var(--border); }
+.ai-verdict.lvl-high { background: var(--del-bg); border-color: var(--del-gutter); --lvl: var(--del-fg); }
+.ai-verdict.lvl-medium { background: var(--warn-bg); border-color: var(--warn-edge); --lvl: var(--warn-fg); }
+.ai-verdict.lvl-low { background: var(--add-bg); border-color: var(--add-gutter); --lvl: var(--add-fg); }
+.ai-verdict .v-head { display: flex; align-items: center; gap: 12px; }
+.ai-verdict .meter i { width: 16px; height: 7px; }
+.ai-verdict b { font-size: 17px; font-weight: 700; letter-spacing: -0.015em; color: var(--lvl, var(--text)); }
+.ai-verdict p { margin: 7px 0 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+
+/* The checklist, with a bar that fills as boxes are ticked: the ticks are
+   remembered across reloads, so the bar is how a reader coming back sees how
+   far they got. */
+.ai-progress { height: 4px; border-radius: 999px; background: var(--border); overflow: hidden;
+  margin: -2px 0 8px; }
+.ai-progress i { display: block; height: 100%; width: 0; background: var(--ai); border-radius: inherit;
+  transition: width .25s ease; }
+.ai-check { list-style: none; margin: 0; padding: 0; }
+.ai-check label { display: flex; gap: 10px; align-items: flex-start; padding: 6px 8px; margin: 0 -8px;
+  border-radius: 8px; cursor: pointer; font-size: 13.5px; line-height: 1.45; }
+.ai-check label:hover { background: var(--card); }
+.ai-check input { margin: 1px 0 0; accent-color: var(--ai); width: 16px; height: 16px; flex: 0 0 auto; }
 .ai-check input:checked + span { color: var(--faint); text-decoration: line-through; }
-.ai-foot { padding: 10px 20px 12px; border-top: 1px solid var(--rule); background: var(--panel);
-  color: var(--faint); font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px 14px;
-  align-items: center; }
+
+/* What could go wrong: a title per risk with its meter, the detail one click
+   away. All of them start closed: the verdict above already says why the
+   change is risky and the checklist says what to do, so the rail stays a list
+   to scan rather than a second essay. Printing opens every one. */
+.ai-risks { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.ai-risks li { border-bottom: 1px solid var(--border); }
+.ai-risks summary, .ai-risks .r-row { display: flex; align-items: baseline; gap: 10px; padding: 10px 0;
+  font-weight: 600; font-size: 13.5px; line-height: 1.4; letter-spacing: -0.005em; }
+.ai-risks summary { cursor: pointer; list-style: none; border-radius: 6px; }
+.ai-risks summary::-webkit-details-marker { display: none; }
+.ai-risks summary:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+.ai-risks summary::after { content: ""; flex: 0 0 auto; margin-left: auto; width: 6px; height: 6px;
+  border: solid var(--faint); border-width: 0 1.5px 1.5px 0; transform: translateY(-3px) rotate(45deg);
+  transition: transform .15s; }
+.ai-risks details[open] > summary::after { transform: translateY(0) rotate(-135deg); }
+.ai-risks .meter { transform: translateY(-2px); }
+.ai-risks .r-title { min-width: 0; }
+.ai-risks .r-body { padding: 0 0 12px 46px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.ai-risks .r-body p { margin: 0; }
+.ai-risks .ai-files { margin-top: 6px; }
+
+/* The risk level as a chip, where a page has room for one line per change:
+   the history and the archive index. */
+.chip.risk-high { background: var(--del-gutter); color: var(--del-fg); }
+.chip.risk-medium { background: var(--warn-bg); color: var(--warn-fg); }
+.chip.risk-low { background: var(--add-gutter); color: var(--add-fg); }
+
+.ai-foot { padding: 11px 28px 12px; border-top: 1px solid var(--rule); background: var(--card);
+  color: var(--faint); font-size: 12px; line-height: 1.5; display: flex; flex-wrap: wrap;
+  gap: 6px 14px; align-items: center; }
 .ai-foot .grow { flex: 1 1 320px; }
+.ai-foot b { color: var(--muted); font-weight: 600; }
 .cmdcopy { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
 .cmdcopy .cmd { overflow: hidden; text-overflow: ellipsis; }
 .copy { font: 600 11.5px/1.4 var(--sans); padding: 3px 9px; border-radius: 6px; cursor: pointer;
@@ -721,17 +797,30 @@ span.ai-file:hover { border-color: var(--border); color: var(--text); }
 .ai-line { margin-top: 3px; color: var(--muted); font-size: 12.5px; white-space: normal; }
 .ai-line::before { content: "✦ "; color: var(--ai); }
 .ai-line .chip { margin-left: 6px; vertical-align: 1px; }
-@media (max-width: 860px) {
-  .ai-cols { grid-template-columns: minmax(0, 1fr); }
+/* One column on a narrow screen, and the two halves interleave rather than
+   stack: the verdict comes straight after the headline, as it does side by
+   side on a wide screen, instead of below every change. */
+@media (max-width: 900px) {
+  .ai-grid, .ai-grid.single { display: flex; flex-direction: column; padding: 22px 24px 24px; }
+  .ai-lede, .ai-rail { display: contents; }
+  .ai-headline { order: 1; }
+  .ai-verdict { order: 2; margin-top: 16px; }
+  .ai-summary { order: 3; margin-top: 16px; }
+  .ai-sec-changes { order: 4; }
+  .ai-sec-checklist { order: 5; }
+  .ai-sec-risks { order: 6; }
+  .ai-rail .ai-sec, .ai-lede .ai-sec { margin-top: 28px; }
 }
 @media (max-width: 640px) {
-  .ai-body, .ai-foot, .ai-offer, .ai-status { padding-left: 16px; padding-right: 16px; }
-  .ai-list li { flex-direction: column; gap: 4px; }
-  .ai-list .chip { min-width: 0; align-self: flex-start; }
+  .ai-grid, .ai-grid.single { padding: 18px 16px 20px; }
+  .ai-foot, .ai-offer, .ai-status { padding-left: 16px; padding-right: 16px; }
+  .ai-headline { font-size: 19px; }
+  .ai-summary { font-size: 14.5px; }
   .ai-note { padding-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .ai-wait .ai-mark { animation: none; }
+  .ai-progress i, .ai-risks summary::after { transition: none; }
 }
 @media print {
   .copy, .ai-offer { display: none !important; }
@@ -1023,12 +1112,14 @@ JS = """
   Array.prototype.slice.call(document.querySelectorAll('.ai-check')).forEach(function (list) {
     var key = list.getAttribute('data-key') || 'lw-ai';
     var tally = list.parentNode.querySelector('.ai-done');
+    var bar = list.parentNode.querySelector('.ai-progress i');
     var boxes = Array.prototype.slice.call(list.querySelectorAll('input[type=checkbox]'));
     var saved = {};
     try { saved = JSON.parse(window.localStorage.getItem(key) || '{}') || {}; } catch (e) { saved = {}; }
     function count() {
       var done = boxes.filter(function (b) { return b.checked; }).length;
       if (tally) { tally.textContent = done + ' of ' + boxes.length + ' done'; }
+      if (bar) { bar.style.width = (boxes.length ? 100 * done / boxes.length : 0) + '%'; }
     }
     boxes.forEach(function (box) {
       var item = box.getAttribute('data-item') || '';
@@ -1040,6 +1131,13 @@ JS = """
       });
     });
     count();
+  });
+
+  // A printed brief has no way to open a risk, so every one is opened first.
+  window.addEventListener('beforeprint', function () {
+    Array.prototype.slice.call(document.querySelectorAll('.ai-risks details')).forEach(function (d) {
+      d.open = true;
+    });
   });
 
   // While an explanation is being written the page reloads itself every few
@@ -1808,20 +1906,37 @@ def _provenance(ex: Explanation) -> str:
     return " · ".join(parts) + ". AI can be wrong — the diffs below are the record."
 
 
-def _explanation_card(panel: AIPanel, ex: Explanation, linkable: set[str]) -> str:
-    """The full card: headline, summary, changes, risks and a checklist that remembers its ticks.
+#: How many of a meter's three bars each level lights.
+_METER_BARS = {"low": 1, "medium": 2, "high": 3}
 
-    Changes go on the left and the things to act on — risks, then the
-    checklist — on the right, so on a wide screen the reader sees what
-    happened and what to do about it side by side. A refresh in flight, or one
-    that failed, is a strip across the top: the answer already on screen stays
-    readable either way.
+
+def _meter(level: str) -> str:
+    """A level drawn as three bars, as many lit as it is high: ``low`` one, ``medium`` two, ``high`` three.
+
+    Drawn as well as written so a column of risks can be ranked by eye before
+    any of it is read. Decorative to a screen reader, which hears the level in
+    the words beside it.
     """
-    risk = (f'<span class="chip risk-{_esc(ex.risk)}">{_esc(ex.risk)} risk</span>'
-            if ex.risk else "")
-    head = (f'<div class="sec-head"><span class="ai-mark" aria-hidden="true">✦</span>'
-            f'<h2>What changed</h2>{risk}'
-            f'<span class="aside">AI summary</span></div>')
+    lit = _METER_BARS.get(level, 0)
+    bars = "".join('<i class="on"></i>' if n < lit else "<i></i>" for n in range(3))
+    return f'<span class="meter lvl-{_esc(level)}" aria-hidden="true">{bars}</span>'
+
+
+def _explanation_card(panel: AIPanel, ex: Explanation, linkable: set[str]) -> str:
+    """The full card, laid out as a deploy brief: what the change does, and what to do about it.
+
+    The left column is the reading — headline, summary, then each change with
+    the files it touches. The right is a rail of its own for acting on it: the
+    verdict (the risk level as a meter, and why), the deploy checklist, which
+    remembers its ticks, and what could go wrong, each risk's detail one click
+    away. Either half can be empty — an unstructured answer is a
+    headline and a paragraph — and the card then reads as one column.
+
+    A refresh in flight, or one that failed, is a strip across the top: the
+    answer already on screen stays readable either way.
+    """
+    head = ('<div class="sec-head"><span class="ai-mark" aria-hidden="true">✦</span>'
+            '<h2>What changed</h2><span class="aside">AI summary</span></div>')
     strip = ""
     if panel.state == "pending":
         strip = (f'<div class="ai-status ai-wait" data-ai-started="{_esc(panel.started_at)}" '
@@ -1836,48 +1951,60 @@ def _explanation_card(panel: AIPanel, ex: Explanation, linkable: set[str]) -> st
                  f'{_esc(panel.message.rstrip("."))}.{hint}</span>'
                  f'{_copyable(panel.command + " --refresh")}</div>')
 
-    body = []
+    lede = []
     if ex.headline:
-        body.append(f'<p class="ai-headline">{_esc(ex.headline)}</p>')
+        lede.append(f'<p class="ai-headline">{_esc(ex.headline)}</p>')
     if ex.summary and ex.summary != ex.headline:
-        body.append(f'<p class="ai-summary">{_esc(ex.summary)}</p>')
-    if ex.risk_reason:
-        body.append(f'<p class="ai-why">Why {_esc(ex.risk or "this")} risk: {_esc(ex.risk_reason)}</p>')
-
-    left, right = [], []
+        lede.append(f'<p class="ai-summary">{_esc(ex.summary)}</p>')
     if ex.changes:
         items = "".join(
-            f'<li><span class="chip k-{_esc(p.kind)}">{_esc(p.kind)}</span><div class="what">'
+            f'<li class="k-{_esc(p.kind)}"><span class="k-dot" aria-hidden="true"></span><div>'
             f'<b>{_esc(p.title)}</b>' + (f"<p>{_esc(p.detail)}</p>" if p.detail else "")
-            + _file_buttons(p.files, linkable) + "</div></li>"
+            + f'<div class="ai-meta"><span class="k-name">{_esc(p.kind)}</span>'
+            + _file_buttons(p.files, linkable) + "</div></div></li>"
             for p in ex.changes
         )
-        left.append(f'<div class="ai-block"><h3>Changes</h3><ol class="ai-list">{items}</ol></div>')
-    if ex.risks:
-        items = "".join(
-            f'<li><span class="chip risk-{_esc(p.kind)}">{_esc(p.kind)}</span><div class="what">'
-            f'<b>{_esc(p.title)}</b>' + (f"<p>{_esc(p.detail)}</p>" if p.detail else "")
-            + _file_buttons(p.files, linkable) + "</div></li>"
-            for p in ex.risks
-        )
-        right.append(f'<div class="ai-block"><h3>Worth checking</h3><ul class="ai-list">{items}</ul></div>')
+        lede.append(f'<div class="ai-sec ai-sec-changes"><h3>Changes <span class="count">{len(ex.changes)}</span></h3>'
+                    f'<ol class="ai-changes">{items}</ol></div>')
+
+    rail = []
+    if ex.risk or ex.risk_reason:
+        label = f"{ex.risk.capitalize()} risk" if ex.risk else "Risk"
+        rail.append(f'<div class="ai-verdict lvl-{_esc(ex.risk or "none")}"><div class="v-head">'
+                    f'{_meter(ex.risk)}<b>{_esc(label)}</b></div>'
+                    + (f"<p>{_esc(ex.risk_reason)}</p>" if ex.risk_reason else "") + "</div>")
     if ex.checklist:
         items = "".join(
             f'<li><label><input type="checkbox" data-item="{_esc(step)}"><span>{_esc(step)}</span>'
             "</label></li>"
             for step in ex.checklist
         )
-        right.append(f'<div class="ai-block"><h3>Deploy checklist <span class="count ai-done"></span></h3>'
-                     f'<ul class="ai-check" data-key="{_esc(panel.storage_key)}">{items}</ul></div>')
-    if left and right:
-        body.append(f'<div class="ai-cols"><div>{"".join(left)}</div><div>{"".join(right)}</div></div>')
-    elif left or right:
-        body.append(f'<div class="ai-cols single"><div>{"".join(left + right)}</div></div>')
+        rail.append('<div class="ai-sec ai-sec-checklist"><h3>Deploy checklist <span class="ai-done"></span></h3>'
+                    '<div class="ai-progress" aria-hidden="true"><i></i></div>'
+                    f'<ul class="ai-check" data-key="{_esc(panel.storage_key)}">{items}</ul></div>')
+    if ex.risks:
+        rows = []
+        for p in ex.risks:
+            title = f'{_meter(p.kind)}<span class="r-title">{_esc(p.title)}</span>'
+            body = (f"<p>{_esc(p.detail)}</p>" if p.detail else "") + _file_buttons(p.files, linkable)
+            if body:
+                rows.append(f'<li><details><summary>{title}<span class="sr-only"> '
+                            f'({_esc(p.kind)} risk)</span></summary><div class="r-body">{body}</div>'
+                            "</details></li>")
+            else:
+                rows.append(f'<li><div class="r-row">{title}</div></li>')
+        rail.append(f'<div class="ai-sec ai-sec-risks"><h3>What could go wrong <span class="count">{len(ex.risks)}</span>'
+                    f'</h3><ul class="ai-risks">{"".join(rows)}</ul></div>')
+
+    if lede and rail:
+        body = (f'<div class="ai-grid"><div class="ai-lede">{"".join(lede)}</div>'
+                f'<div class="ai-rail">{"".join(rail)}</div></div>')
+    else:
+        body = f'<div class="ai-grid single"><div class="ai-lede">{"".join(lede + rail)}</div></div>'
 
     foot = (f'<div class="ai-foot"><span class="grow">{_provenance(ex)}</span>'
             f'{_copyable(panel.command + " --refresh")}</div>')
-    return (f'<section class="card ai" id="ai-summary">{head}{strip}'
-            f'<div class="ai-body">{"".join(body)}</div>{foot}</section>')
+    return f'<section class="card ai" id="ai-summary">{head}{strip}{body}{foot}</section>'
 
 
 def _ai_cards(panel: AIPanel | None, diff: VersionDiff) -> tuple[str, str]:

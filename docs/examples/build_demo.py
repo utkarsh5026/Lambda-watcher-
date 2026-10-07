@@ -16,6 +16,7 @@ config file arrives carrying credentials nobody meant to commit.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -24,7 +25,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+from lambda_watcher.ai.explanation import parse_answer, save_done
+from lambda_watcher.ai.prompt import PROMPT_VERSION, build_prompt
+from lambda_watcher.config import load_config
+from lambda_watcher.db import Database
 from lambda_watcher.demo import fake_secret, stage_downloads
+from lambda_watcher.diffing.build import diff_from_index
+from lambda_watcher.store import Store
+from lambda_watcher.utils import utc_now_iso
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -32,6 +40,13 @@ REPO = Path(__file__).resolve().parents[2]
 AI_KEY_VARIABLES = frozenset({
     "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
 })
+
+#: A model's reply to the request `lw explain` sends for the demo's v1 → v2, kept
+#: as the JSON it answered with. See `publish_explained_report`.
+SAMPLE_EXPLANATION = REPO / "docs" / "examples" / "sample-explanation.json"
+
+#: Who wrote that reply, as (provider, model id) — what the report's footer names.
+SAMPLE_MODEL = ("anthropic", "claude-opus-5-5")
 
 
 # --------------------------------------------------------------------------- #
@@ -177,7 +192,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep", metavar="DIR", help="write the archive here instead of a temp dir")
     parser.add_argument("--publish", action="store_true",
-                        help="also refresh docs/examples/report/, the live HTML report")
+                        help="also refresh the live HTML reports in docs/examples/")
     args = parser.parse_args()
 
     tmp = None
@@ -323,7 +338,8 @@ def main() -> int:
             split.run("rm", "order-processor", "--yes"))
 
     if args.publish:
-        publish_report(archive)
+        publish_report(archive, REPO / "docs" / "examples" / "report")
+        publish_explained_report(base, v1, v2)
     if args.keep:
         print(f"\n\nArchive kept at {archive}")
     else:
@@ -331,8 +347,8 @@ def main() -> int:
     return 0
 
 
-def publish_report(home: Path) -> None:
-    """Copy the generated HTML report into docs/, where Pages serves it.
+def publish_report(home: Path, dest: Path) -> None:
+    """Copy the generated HTML report into ``dest`` under docs/, where Pages serves it.
 
     The report is self-contained — one stylesheet inlined, one relative link
     between its two pages — so it is published as generated, with one exception.
@@ -349,7 +365,6 @@ def publish_report(home: Path) -> None:
     Pages it would be a link to nothing.
     """
     src = home / "reports" / "order-processor"
-    dest = REPO / "docs" / "examples" / "report"
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(src, dest)
@@ -369,6 +384,66 @@ def publish_report(home: Path) -> None:
 
     print(f"\n\nPublished the HTML report to {dest.relative_to(REPO)}/"
           f" ({masked} page(s) with the fixture credentials masked)")
+
+
+def publish_explained_report(base: Path, v1: Path, v2: Path) -> None:
+    """Publish the demo's report a second time, with an AI explanation in it, to ``report-explained/``.
+
+    The builder never asks a real model: an answer needs a key and differs on
+    every run, which is exactly what the captures cannot have. So the answer is
+    a fixture — ``sample-explanation.json``, a model's reply to the request
+    ``lw explain order-processor --dry-run`` prints — and everything after the
+    reply is the real code path. It gets an archive of its own so that nothing
+    the captures read ever has an explanation in it.
+    """
+    home = base / "home-explained"
+    (home / "Downloads").mkdir(parents=True)
+    runner = Runner(home, home / "Downloads", width=240)
+    runner.run("ingest", str(v1), str(v2))
+    save_sample_explanation(runner.archive)
+    runner.run("report", "order-processor", "--no-open")
+    publish_report(runner.archive, REPO / "docs" / "examples" / "report-explained")
+
+
+def save_sample_explanation(archive: Path) -> None:
+    """Save ``sample-explanation.json`` as the explanation of v1 → v2, the way ``lw explain`` saves one.
+
+    The reply goes through :func:`parse_answer` against the paths of the
+    request built for this very diff, and gets the provenance a live run
+    records, so the report draws it exactly as it would a fresh answer. A file
+    the sample cites that the diff does not have stops the build: the parser
+    would quietly drop the link, and a sample that has drifted from the demo it
+    describes is worse than none.
+    """
+    reply = SAMPLE_EXPLANATION.read_text(encoding="utf-8")
+    cfg = load_config(archive / "config.yaml")
+    cfg.store.root = str(archive)
+    with Database(cfg.db_path) as db:
+        store = Store(cfg)
+        function = db.get_function_by_name("order-processor")
+        a = db.get_version(function["id"], 1) if function else None
+        b = db.get_version(function["id"], 2) if function else None
+        if function is None or a is None or b is None:
+            raise SystemExit("the explained demo archive is missing order-processor v1 or v2")
+        diff = diff_from_index(db, store, cfg.diff, function["name"], a, b)
+        built = build_prompt(diff)
+
+        answer = json.loads(reply)
+        cited = set(answer.get("files") or {})
+        for section in ("changes", "risks"):
+            cited |= {path for item in answer.get(section) or [] for path in item.get("files") or []}
+        if cited - built.paths:
+            raise SystemExit(f"{SAMPLE_EXPLANATION.name} cites files the demo change does not have: "
+                             f"{sorted(cited - built.paths)}")
+
+        explanation = parse_answer(reply, built.paths)
+        explanation.provider, explanation.model = SAMPLE_MODEL
+        explanation.created_at = utc_now_iso()
+        explanation.prompt_version = PROMPT_VERSION
+        explanation.files_sent, explanation.files_total = built.files_sent, built.files_total
+        explanation.omitted, explanation.withheld = built.omitted, built.withheld
+        explanation.redactions, explanation.send_code = built.redactions, built.send_code
+        save_done(store, diff.a_meta, diff.b_meta, explanation)
 
 
 if __name__ == "__main__":
