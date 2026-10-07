@@ -10,17 +10,44 @@ The package is not installed globally; work inside a venv.
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"      # pytest, pytest-cov, ruff  (".[lint]" = ruff alone)
 
-.venv/bin/python -m pytest              # full suite (pyproject sets testpaths=tests, -q)
+.venv/bin/python -m pytest              # full suite (pyproject sets testpaths=tests, -q); ~3 min wall
 .venv/bin/python -m pytest tests/test_diff.py::test_diff_reports_code_dependency_env_and_service_changes
 .venv/bin/python -m pytest -k rename    # by name fragment
 
-ruff check .                            # or .venv/bin/ruff; config lives in pyproject
-python tools/check_docstrings.py        # the other CI lint gate; stdlib only, no venv needed
+.venv/bin/ruff check .                  # config lives in pyproject
+python3 tools/check_docstrings.py       # the other CI lint gate; stdlib only, no venv needed
 ```
 
 Running the CLI during development: `.venv/bin/lambda-watcher <cmd>` (alias `lw`), or
 `python -m lambda_watcher`. Point `LAMBDA_WATCHER_HOME` at a scratch directory so you never
-touch the real `~/.lambda-watcher` archive while testing.
+touch the real `~/.lambda-watcher` archive while testing. Redirect `HOME` too, since `~/Downloads`
+and the per-user state `status`/`doctor` read hang off it. `/try` sets up both and seeds the demo
+function.
+
+### Claude Code setup (`.claude/`)
+
+Project slash commands live in [.claude/skills/](.claude/skills/). Each one is the checklist for a
+change this file describes in prose, so reach for it rather than re-deriving the steps:
+
+| Command | Use it to |
+|---|---|
+| `/check [pytest args]` | Run CI's three gates (ruff, docstrings, pytest), cheapest first, and fix failures |
+| `/try [lw args]` | Run the real CLI against a sandbox archive seeded with the demo `order-processor` |
+| `/new-command <name>` | Add a command with its panel, helptext entry, completion, README row and site capture |
+| `/new-facet <name>` | Wire a new analysis facet through all [seven places](#adding-an-analysis-facet-touches-seven-places), old archives included |
+| `/regen-docs [--publish]` | Refresh captured output in README.md and docs/index.html from `build_demo.py` |
+| `/compat-review [base]` | Review a branch for anything an older archive would no longer read correctly |
+| `/pr [summary]` | Branch, gate, commit, push and open a PR in the house style |
+| `/release <bump>` | Bump, commit and tag a release; asks before the push that publishes to PyPI |
+
+Two hooks run from [.claude/settings.json](.claude/settings.json).
+[lint_edited.py](.claude/hooks/lint_edited.py) runs `ruff check` on every Python file Claude edits,
+plus the docstring checker on `src/`, and hands any failure straight back.
+[guard_service.py](.claude/hooks/guard_service.py) asks the user before any command that registers,
+stops or restarts the real background watcher: `lw start`/`stop`/`restart`, `lw setup` without
+`--no-service`, or `systemctl`/`launchctl`/`schtasks` aimed at the watcher's own service. A
+sandboxed `HOME` does not contain those, because the OS service manager does not live under it.
+Both hooks fail open. CI is still the gate.
 
 ## The goal that outranks the others
 
@@ -201,7 +228,7 @@ vendored `package.json`) — because only the installed version is what actually
 | Analysis | [analysis/](src/lambda_watcher/analysis/) | One module per facet (runtime, handler, deps, envvars, services, secrets, inventory), composed by `analyse()` |
 | Persistence | [store.py](src/lambda_watcher/store.py), [db.py](src/lambda_watcher/db.py), [gitmirror.py](src/lambda_watcher/gitmirror.py) | Directory layout, SQLite index, git mirror |
 | Presentation | [diffing/](src/lambda_watcher/diffing/), [cli.py](src/lambda_watcher/cli.py) | Compare, render text/HTML, Typer commands. `diffing/build.py` assembles a diff from the index — use it rather than calling `compare_versions` with a dozen lookups again |
-| AI | [ai/](src/lambda_watcher/ai/) | Optional plain-English explanations of a `VersionDiff`: settings (`ai.json`), prompt, providers over stdlib HTTPS, the saved record, the background `Explainer` |
+| AI | [ai/](src/lambda_watcher/ai/) | Optional plain-English explanations of a `VersionDiff`: settings (`ai.json`), prompt, providers over stdlib HTTPS, the saved record, the background `Explainer`; plus the optional agent (`workspace.py`, `agent.py`) |
 
 ### AI explanations sit on top of the diff, not beside it
 
@@ -217,11 +244,35 @@ vendored `package.json`) — because only the installed version is what actually
 - **Never fail an ingest, never block the queue.** The ingest marks the pair pending and hands it to
   `Explainer`, a separate thread that only reads the index and writes files. Only `lw watch` and
   `lw ingest` pass an explainer; backfill, setup and the demo never make requests.
-- **No SDKs.** Four JSON-over-HTTPS wire formats in `providers.py` keep the install dependency-free.
-  Every failure is an `AIError` whose `hint` is the next command; retry policy lives in `with_retries`.
+- **No SDKs in the core install.** Four JSON-over-HTTPS wire formats in `providers.py` keep it
+  dependency-free. Every failure is an `AIError` whose `hint` is the next command; retry policy lives
+  in `with_retries`. The one exception is the agent (below), and it lives behind an extra.
 - **What is sent is decided in `prompt.py`**: vendored files never, credential files by name only,
   every line through `redact()`. `lw explain --dry-run` prints exactly that. Tests talk to a scripted
   localhost server (`tests/test_ai.py::FakeService`), never a real service.
+
+**The agent is a second way to the same answer, not a second feature.** `lw explain --agent` (or
+`lw ai settings --agent`, saved as `engine` in `ai.json`) hands the diff to
+[ai/agent.py](src/lambda_watcher/ai/agent.py), a `deepagents` agent that reads both versions and follows
+the change before answering in the *same* JSON shape (`prompt.ANSWER_FORMAT`), so the record, the
+report card and `--all` are shared. Its rules:
+
+- **Optional, and imported only inside functions.** `deepagents` needs Python 3.11 and pulls in
+  LangChain, so it is the `agents` extra; `agent_problem()` answers "can it run?" with `find_spec`, and
+  nothing imports the libraries at module load. Asked for explicitly and unavailable is an `AIError`
+  naming `INSTALL_COMMAND`; taken from the setting, `run.explain_diff` falls back to one request.
+- **It sees a `workspace.Workspace`, never the archive.** Both versions are mounted in memory at
+  `/old/` and `/new/` under `prompt.py`'s rules (vendored out, credential files as a note, every line
+  redacted, nothing with `send_code` off). That is the privacy boundary *and* the reason nothing it
+  writes can reach disk. LangSmith tracing is forced off for the run.
+- **Bounded.** Tool-call and model-call caps (`MAX_TOOL_CALLS`, `MAX_MODEL_CALLS`, and smaller ones per
+  subagent) plus LangGraph's recursion limit. The single subagent replaces deepagents' default one so it
+  carries the caps. `investigate_diff` maps library exceptions through `providers.classify`.
+- **Source-agnostic.** The agent's prompt and brief assume a project, not a Lambda function: the same
+  tool is used on GitHub source archives. Keep new prompt text that way.
+- **Tests:** `tests/test_agent.py` drives a real agent with a scripted chat model, and the real
+  `ChatAnthropic` against `FakeService`; those skip where the extra is not installed (CI's 3.10 legs).
+  `deepagents` is pinned below 0.8 because its middleware API moves between minors.
 
 ### Adding an analysis facet touches seven places
 
@@ -266,7 +317,7 @@ then pytest across Python 3.10-3.13 on Linux plus 3.10/3.13 on macOS and Windows
 installs the wheel into a clean venv outside the source tree and smoke-tests the CLI. The `ci-ok` job
 is the aggregate gate to point branch protection at.
 
-- **`ruff format` is deliberately not enforced.** It would reformat 28 of 36 files, collapsing the
+- **`ruff format` is deliberately not enforced.** It would reformat 57 of 70 files, collapsing the
   manual alignment this codebase uses on purpose. Only `ruff check` gates CI.
 - The cross-platform matrix is the point, not ceremony: this is a filesystem watcher, and watchdog
   behaviour, path handling and file locking genuinely differ per OS. The watcher tests already force
